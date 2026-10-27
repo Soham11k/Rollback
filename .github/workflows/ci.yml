@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-app:
+    name: GatePass tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+
+      - name: Install
+        working-directory: app
+        run: pip install -r requirements.txt
+
+      - name: Seed and test
+        working-directory: app
+        run: |
+          python seed.py
+          PYTHONPATH=. pytest -q
+
+  test-rewind:
+    name: RewindAI tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: rewind/requirements.txt
+
+      - name: Install
+        working-directory: rewind
+        run: pip install -r requirements.txt
+
+      - name: Test
+        working-directory: rewind
+        run: PYTHONPATH=. pytest -q
+
+  # RewindAI watches the release branch, so only commits that passed both suites get deployed.
+  promote:
+    name: Promote to release
+    needs: [test-app, test-rewind]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: promote-release
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move release to this commit
+        run: |
+          git push origin "HEAD:refs/heads/release" --force
+          echo "release is now ${GITHUB_SHA::7}. RewindAI picks it up on its next poll." >> "$GITHUB_STEP_SUMMARY"

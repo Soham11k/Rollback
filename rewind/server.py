@@ -17,13 +17,15 @@ from flask import (
     request,
     url_for,
 )
+import requests
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from werkzeug.utils import secure_filename
 
 from aifix import AIFixer, ollama_reachable
 from deployer import publish_release, restore_version
-from diagnosis import diagnose_incident
-from rank import annotate_releases, pick_best
+from diagnosis import LIMITS, diagnose_incident
+from github import GitHubPoller
+from rank import _version_key, annotate_releases, next_version, pick_best
 from registry import Registry
 from verify import Verifier
 from watch import Watcher
@@ -35,6 +37,7 @@ REGISTRY = Registry(DATA_DIR)
 WATCHER = Watcher(REGISTRY)
 VERIFIER = Verifier(REGISTRY, WATCHER)
 AIFIXER = AIFixer(REGISTRY, VERIFIER)
+GITHUB = GitHubPoller(REGISTRY, VERIFIER)
 _started = False
 _start_lock = threading.Lock()
 
@@ -45,6 +48,7 @@ def _ensure_started() -> None:
         if _started:
             return
         WATCHER.start()
+        GITHUB.start()
         _started = True
 
 
@@ -60,6 +64,101 @@ def _app_or_404(app_id: str) -> dict:
     return record
 
 
+def _live_health(record: dict) -> str:
+    live = record.get("live_version")
+    if not live:
+        return "idle"
+    if VERIFIER.active_version(record["id"]) == live:
+        return "verifying"
+    release = REGISTRY.get_release(record["id"], live) or {}
+    return release.get("decision") or "unverified"
+
+
+def _hero(record: dict, live_health: str, last_incident: dict | None, verifying: dict | None) -> dict:
+    live = record.get("live_version")
+    if verifying:
+        return {
+            "state": "verifying",
+            "title": f"Checking {verifying['version']} against live traffic.",
+            "lede": (
+                f"RewindAI is watching CPU, memory, latency and errors for "
+                f"{verifying['window_s']} s. A bad release rolls back on its own."
+            ),
+        }
+    if live_health == "anomaly":
+        return {
+            "state": "failing",
+            "title": f"{live} is failing. Users should not wait.",
+            "lede": "Revert to the best published version, or stay and fix the bugs with local AI.",
+        }
+    if record.get("last_decision") == "rolled_back" and last_incident:
+        return {
+            "state": "rolled_back",
+            "title": (
+                f"{last_incident.get('version')} was bad. RewindAI put {live} back "
+                f"in {last_incident.get('time_to_rollback_s')} s."
+            ),
+            "lede": (
+                f"Users kept being served. See where the bugs are below, then fix them "
+                f"with AI or keep {live} serving."
+            ),
+        }
+    if live_health == "healthy":
+        return {
+            "state": "healthy",
+            "title": f"{live} is live and healthy.",
+            "lede": "Every publish is verified against real traffic before RewindAI trusts it.",
+        }
+    if not live:
+        return {
+            "state": "idle",
+            "title": "No release yet.",
+            "lede": "Publish a version from the CLI or connect a GitHub repo. RewindAI verifies it with zero code changes.",
+        }
+    return {
+        "state": "unverified",
+        "title": f"{live} is live but unverified.",
+        "lede": "It was published with verify skipped. Publish through RewindAI to get it checked.",
+    }
+
+
+def _resolved_by(app_id: str, last_incident: dict | None) -> str | None:
+    """Newest healthy release published after the incident with a higher version."""
+    if not last_incident:
+        return None
+    bad = str(last_incident.get("version") or "")
+    detected = str(last_incident.get("detected_at") or "")
+    newer = [
+        r
+        for r in REGISTRY.list_releases(app_id)
+        if r.get("decision") == "healthy"
+        and not r.get("quarantined")
+        and str(r.get("published_at") or "") >= detected
+        and _version_key(str(r.get("version") or "")) > _version_key(bad)
+    ]
+    if not newer:
+        return None
+    newer.sort(key=lambda r: _version_key(str(r.get("version") or "")))
+    return newer[-1].get("version")
+
+
+def _suggested_version(app_id: str) -> str:
+    return next_version([r.get("version") for r in REGISTRY.list_releases(app_id)])
+
+
+def _busy_response(app_id: str):
+    active = VERIFIER.active_version(app_id)
+    if not active:
+        return None
+    return jsonify(
+        {
+            "status": "busy",
+            "version": active,
+            "message": f"{active} is still verifying. Wait for the verdict, then try again.",
+        }
+    ), 409
+
+
 def _console_context(app_id: str) -> dict:
     record = _app_or_404(app_id)
     releases = annotate_releases(
@@ -67,8 +166,9 @@ def _console_context(app_id: str) -> dict:
         record.get("live_version"),
     )
     incident = REGISTRY.read_verify(app_id) or {}
+    last_incident = REGISTRY.read_app_blob(app_id, "last_incident.json")
     report = REGISTRY.read_report(app_id) or {}
-    diagnosis = diagnose_incident(incident) if incident else (report.get("diagnosis") or diagnose_incident(None))
+    diagnosis = diagnose_incident(last_incident) if last_incident else diagnose_incident(None)
     best = pick_best(REGISTRY.list_releases(app_id))
     live = record.get("live_version")
     can_revert = bool(
@@ -76,19 +176,26 @@ def _console_context(app_id: str) -> dict:
         and live
         and best.get("version") != live
     )
-    fix = AIFIXER.get_fix(app_id)
-    ollama = ollama_reachable()
+    verifying = VERIFIER.progress(app_id)
+    live_health = _live_health(record)
     return {
         "app": record,
         "releases": releases,
         "incident": incident or None,
+        "last_incident": last_incident,
         "report": report or None,
         "diagnosis": diagnosis,
         "best_release": best,
         "can_revert_to_best": can_revert,
-        "fix": fix,
-        "ollama": ollama,
+        "fix": AIFIXER.get_fix(app_id),
+        "ollama": ollama_reachable(),
         "probes": WATCHER.latest_probes(app_id),
+        "verifying": verifying,
+        "live_health": live_health,
+        "hero": _hero(record, live_health, last_incident, verifying),
+        "suggested_version": _suggested_version(app_id),
+        "resolved_by": _resolved_by(app_id, last_incident),
+        "limits": LIMITS,
     }
 
 
@@ -102,8 +209,8 @@ def index():
         apps.append(
             {
                 **row,
-                "verdict": row.get("last_decision") or "idle",
-                "incident": REGISTRY.read_verify(row["id"]),
+                "verdict": _live_health(row),
+                "incident": REGISTRY.read_app_blob(row["id"], "last_incident.json"),
             }
         )
     return render_template("index.html", apps=apps, ollama=ollama_reachable())
@@ -156,14 +263,41 @@ def api_get_app(app_id: str):
         REGISTRY.list_releases(app_id),
         record.get("live_version"),
     )
+    last_incident = REGISTRY.read_app_blob(app_id, "last_incident.json")
+    verifying = VERIFIER.progress(app_id)
+    live_health = _live_health(record)
     return jsonify(
         {
             "app": record,
             "releases": releases,
             "incident": REGISTRY.read_verify(app_id),
+            "last_incident": last_incident,
             "report": REGISTRY.read_report(app_id),
             "fix": AIFIXER.get_fix(app_id),
             "ollama": ollama_reachable(),
+            "verifying": verifying,
+            "live_health": live_health,
+            "hero": _hero(record, live_health, last_incident, verifying),
+            "suggested_version": _suggested_version(app_id),
+        }
+    )
+
+
+@app.get("/api/apps/<app_id>/recordings")
+def api_recordings(app_id: str):
+    try:
+        _app_or_404(app_id)
+    except KeyError:
+        return jsonify({"status": "not_found", "app_id": app_id}), 404
+    recordings = sorted(
+        REGISTRY.list_recordings(app_id),
+        key=lambda r: _version_key(str(r.get("version") or "")),
+    )
+    return jsonify(
+        {
+            "recordings": recordings,
+            "verifying": VERIFIER.progress(app_id),
+            "limits": LIMITS,
         }
     )
 
@@ -174,6 +308,9 @@ def api_publish(app_id: str):
         _app_or_404(app_id)
     except KeyError:
         return jsonify({"status": "not_found", "app_id": app_id}), 404
+    busy = _busy_response(app_id)
+    if busy:
+        return busy
 
     payload = request.get_json(silent=True) or {}
     # multipart form also supported
@@ -250,6 +387,9 @@ def api_pick(app_id: str):
         _app_or_404(app_id)
     except KeyError:
         return jsonify({"status": "not_found", "app_id": app_id}), 404
+    busy = _busy_response(app_id)
+    if busy:
+        return busy
     payload = request.get_json(silent=True) or {}
     version = str(payload.get("version") or "").strip()
     force = bool(payload.get("force"))
@@ -350,7 +490,7 @@ def api_get_fix(app_id: str):
     job = AIFIXER.get_fix(app_id, job_id)
     if not job:
         return jsonify({"status": "empty", "fix": None})
-    return jsonify(job)
+    return jsonify({**job, "suggested_version": _suggested_version(app_id)})
 
 
 @app.post("/api/apps/<app_id>/fix/discard")
@@ -365,10 +505,11 @@ def api_discard_fix(app_id: str):
 
 @app.post("/api/apps/<app_id>/fix/ship")
 def api_ship_fix(app_id: str):
+    busy = _busy_response(app_id)
+    if busy:
+        return busy
     payload = request.get_json(silent=True) or {}
-    new_version = str(payload.get("version") or "").strip()
-    if not new_version:
-        return jsonify({"status": "error", "message": "version is required"}), 400
+    new_version = str(payload.get("version") or "").strip() or _suggested_version(app_id)
     try:
         result = AIFIXER.ship(
             app_id,
@@ -378,6 +519,31 @@ def api_ship_fix(app_id: str):
     except (KeyError, ValueError, RuntimeError, TimeoutError) as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
     return jsonify(result), 202
+
+
+@app.post("/api/apps/<app_id>/github")
+def api_github_connect(app_id: str):
+    _app_or_404(app_id)
+    payload = request.get_json(silent=True) or request.form.to_dict() or {}
+    try:
+        github = GITHUB.connect(
+            app_id,
+            str(payload.get("repo") or ""),
+            str(payload.get("branch") or "release"),
+            str(payload.get("path") or "."),
+        )
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({"status": "error", "message": f"GitHub is unreachable: {exc}"}), 502
+    return jsonify({"status": "ok", "github": github, "message": github["message"]})
+
+
+@app.delete("/api/apps/<app_id>/github")
+def api_github_disconnect(app_id: str):
+    _app_or_404(app_id)
+    GITHUB.disconnect(app_id)
+    return jsonify({"status": "ok", "message": f"{app_id} no longer follows GitHub. Publish from the CLI or connect again."})
 
 
 @app.get("/api/ollama")

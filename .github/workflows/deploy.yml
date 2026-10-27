@@ -1,8 +1,8 @@
-name: RewindAI CI/CD
+# Manual only. The everyday path is ci.yml promoting main to the release branch,
+# which RewindAI polls and deploys. This workflow needs a self-hosted runner.
+name: Legacy deploy (manual)
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       fault_mode:

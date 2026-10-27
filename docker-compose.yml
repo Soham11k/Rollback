@@ -16,6 +16,8 @@ services:
       SAMPLE_INTERVAL_SECONDS: "5"
       MAJORITY_WINDOW: "3"
       PORT: "8090"
+      GITHUB_POLL_SECONDS: "30"
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - rewind-data:/data
       - /var/run/docker.sock:/var/run/docker.sock

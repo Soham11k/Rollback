@@ -31,7 +31,8 @@
         <th>App</th>
         <th>Live</th>
         <th>Best</th>
-        <th>Verdict</th>
+        <th>Live health</th>
+        <th>Last incident</th>
         <th></th>
       </tr>
     </thead>
@@ -45,7 +46,10 @@
         <td class="mono">{{ row.live_version or '—' }}</td>
         <td class="mono">{{ row.best_version or '—' }}</td>
         <td>
-          <span class="badge {% if row.verdict == 'anomaly' %}quarantined{% elif row.verdict == 'healthy' %}live{% else %}best{% endif %}">{{ row.verdict }}</span>
+          <span class="badge {% if row.verdict == 'anomaly' %}quarantined{% elif row.verdict == 'healthy' %}live{% elif row.verdict == 'verifying' %}verifying{% else %}best{% endif %}">{{ row.verdict }}</span>
+        </td>
+        <td class="mono">
+          {% if row.incident %}{{ row.incident.version }}{% if row.incident.restored_version %} · rolled back in {{ row.incident.time_to_rollback_s }} s{% endif %}{% else %}—{% endif %}
         </td>
         <td><a class="btn" href="{{ url_for('app_console', app_id=row.id) }}">Open</a></td>
       </tr>

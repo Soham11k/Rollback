@@ -73,4 +73,4 @@ def score_sample(artifact: dict, vector: list[float]) -> tuple[bool, float]:
     scaled = artifact["scaler"].transform(arr)
     prediction = artifact["model"].predict(scaled)[0]
     raw = float(artifact["model"].decision_function(scaled)[0])
-    return prediction == -1, -raw
+    return bool(prediction == -1), -raw

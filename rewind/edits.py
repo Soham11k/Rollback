@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import ast
-import py_compile
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +19,85 @@ def validate_edit(edit: dict) -> str | None:
     if not isinstance(replace, str):
         return f"{path}: replace must be a string"
     return None
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _trim_blank(lines: list[str]) -> list[str]:
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
+
+
+def align_replace(text: str, index: int, replace: str) -> str:
+    """Indent the later lines of a multi-line replace written at column 0.
+
+    A search copied without its leading indentation still matches after the indent;
+    the first replace line inherits that indent, so the later lines need it too.
+    """
+    lead = text[text.rfind("\n", 0, index) + 1 : index]
+    lines = replace.split("\n")
+    if not lead or lead.strip() or len(lines) < 2:
+        return replace
+    rest = [line for line in lines[1:] if line.strip()]
+    if not rest or min(len(_indent(line)) for line in rest) >= len(lead):
+        return replace
+    return "\n".join(lines[:1] + [lead + line if line.strip() else line for line in lines[1:]])
+
+
+def reindent_match(text: str, search: str, replace: str) -> tuple[str | None, int]:
+    """Find search in text when its indentation was shifted, as models often do.
+
+    Matches either the whole block shifted by one constant prefix, or a block whose
+    first line alone lost its indentation. Returns (new_text, matches); new_text is
+    None unless exactly one block matches.
+    """
+    lines = text.splitlines(keepends=True)
+    bare = [line.rstrip("\r\n").rstrip() for line in lines]
+    wanted = [line.rstrip() for line in _trim_blank(search.splitlines())]
+    if not wanted:
+        return None, 0
+    base = min(len(_indent(w)) for w in wanted if w.strip())
+    rel = [w[base:] if w.strip() else "" for w in wanted]
+    size = len(rel)
+
+    found: list[tuple[int, str, str]] = []
+    for start in range(len(bare) - size + 1):
+        window = bare[start : start + size]
+        first = window[0]
+        if first.endswith(rel[0]):
+            prefix = first[: len(first) - len(rel[0])]
+            if not prefix.strip() and all(
+                (not want and not have.strip()) or (want and have == prefix + want)
+                for want, have in zip(rel, window)
+            ):
+                found.append((start, prefix, "shift"))
+                continue
+        if wanted[0].strip() == first.strip() and wanted[1:] == window[1:]:
+            found.append((start, _indent(first), "first"))
+    if len(found) != 1:
+        return None, len(found)
+
+    start, prefix, strategy = found[0]
+    replace_lines = replace.splitlines()
+    if strategy == "shift":
+        block = [
+            ""
+            if not line.strip()
+            else prefix + (line[base:] if not line[:base].strip() else line.lstrip())
+            for line in replace_lines
+        ]
+    else:
+        block = ([prefix + replace_lines[0].lstrip()] if replace_lines else []) + replace_lines[1:]
+    end = start + size
+    newline = "\n" if lines[end - 1].endswith("\n") else ""
+    block_text = "\n".join(block) + (newline if block else "")
+    return "".join(lines[:start]) + block_text + "".join(lines[end:]), 1
 
 
 def apply_edits(src_root: Path, edits: list[dict]) -> tuple[list[str], list[str]]:
@@ -46,24 +122,32 @@ def apply_edits(src_root: Path, edits: list[dict]) -> tuple[list[str], list[str]
         text = target.read_text(encoding="utf-8")
         search = edit["search"]
         count = text.count(search)
-        if count == 0:
-            errors.append(f"{rel}: search text not found")
-            continue
         if count > 1:
             errors.append(f"{rel}: search text matched {count} times (need exactly 1)")
             continue
-        new_text = text.replace(search, edit["replace"], 1)
+        if count == 1:
+            index = text.index(search)
+            new_text = text[:index] + align_replace(text, index, edit["replace"]) + text[index + len(search) :]
+        else:
+            new_text, matches = reindent_match(text, search, edit["replace"])
+            if new_text is None:
+                errors.append(
+                    f"{rel}: search text not found"
+                    if matches == 0
+                    else f"{rel}: search text matched {matches} places ignoring indentation (need exactly 1)"
+                )
+                continue
         target.write_text(new_text, encoding="utf-8")
-        changed.append(rel)
+        if rel not in changed:
+            changed.append(rel)
 
     for rel in changed:
         if not rel.endswith(".py"):
             continue
         path = src_root / rel
         try:
-            py_compile.compile(str(path), doraise=True)
-            ast.parse(path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
+            compile(path.read_text(encoding="utf-8"), rel, "exec")
+        except SyntaxError as exc:
             errors.append(f"{rel}: python compile failed: {exc}")
     return changed, errors
 
@@ -90,25 +174,36 @@ def materialize_from_base(
     return apply_edits(dest, edits)
 
 
+def _text_files(root: Path) -> set[str]:
+    files = set()
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if not path.is_file() or path.name.startswith("._") or path.suffix in {".pyc", ".db", ".sqlite"}:
+            continue
+        if "__pycache__" in rel.parts or ".pytest_cache" in rel.parts:
+            continue
+        files.add(rel.as_posix())
+    return files
+
+
+def _read_lines(path: Path) -> list[str] | None:
+    if not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8").splitlines(True)
+    except UnicodeDecodeError:
+        return None
+
+
 def edits_to_unified_diff(src_before: Path, src_after: Path) -> str:
     import difflib
 
     lines: list[str] = []
-    before_files = {
-        p.relative_to(src_before).as_posix()
-        for p in src_before.rglob("*")
-        if p.is_file() and "._" not in p.name
-    }
-    after_files = {
-        p.relative_to(src_after).as_posix()
-        for p in src_after.rglob("*")
-        if p.is_file() and "._" not in p.name
-    }
-    for rel in sorted(before_files | after_files):
-        left = src_before / rel
-        right = src_after / rel
-        left_text = left.read_text(encoding="utf-8", errors="replace").splitlines(True) if left.is_file() else []
-        right_text = right.read_text(encoding="utf-8", errors="replace").splitlines(True) if right.is_file() else []
+    for rel in sorted(_text_files(src_before) | _text_files(src_after)):
+        left_text = _read_lines(src_before / rel)
+        right_text = _read_lines(src_after / rel)
+        if left_text is None or right_text is None:
+            continue
         if left_text == right_text:
             continue
         diff = difflib.unified_diff(

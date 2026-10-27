@@ -108,7 +108,7 @@ class Watcher:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         # samples[app_id] -> deque of {t, cpu, memory, probes: {path: {ms, ok}}}
-        self._samples: dict[str, deque] = defaultdict(lambda: deque(maxlen=120))
+        self._samples: dict[str, deque] = defaultdict(lambda: deque(maxlen=600))
         self._lock = threading.RLock()
         self._scores: dict[str, float] = {}
 
@@ -185,10 +185,27 @@ class Watcher:
                 print(f"[watch] loop: {exc}", flush=True)
             self._stop.wait(self.interval)
 
-    def features(self, app_id: str, window_seconds: float = 30.0) -> dict[str, float]:
+    def _window(
+        self,
+        app_id: str,
+        window_seconds: float,
+        since: float | None = None,
+    ) -> list[dict]:
         now = time.time()
         with self._lock:
-            samples = [s for s in self._samples.get(app_id, []) if now - s["t"] <= window_seconds]
+            return [
+                s
+                for s in self._samples.get(app_id, [])
+                if now - s["t"] <= window_seconds and (since is None or s["t"] >= since)
+            ]
+
+    def features(
+        self,
+        app_id: str,
+        window_seconds: float = 30.0,
+        since: float | None = None,
+    ) -> dict[str, float]:
+        samples = self._window(app_id, window_seconds, since)
         if not samples:
             return {name: 0.0 for name in FEATURE_NAMES}
 
@@ -212,27 +229,46 @@ class Watcher:
             "error_rate": float(error_rate),
         }
 
-    def feature_vector(self, app_id: str, window_seconds: float = 30.0) -> list[float]:
-        feats = self.features(app_id, window_seconds)
+    def feature_vector(
+        self,
+        app_id: str,
+        window_seconds: float = 30.0,
+        since: float | None = None,
+    ) -> list[float]:
+        feats = self.features(app_id, window_seconds, since)
         return [feats[name] for name in FEATURE_NAMES]
 
-    def most_affected_path(self, app_id: str, window_seconds: float = 30.0) -> str | None:
-        now = time.time()
-        with self._lock:
-            samples = [s for s in self._samples.get(app_id, []) if now - s["t"] <= window_seconds]
+    def path_stats(
+        self,
+        app_id: str,
+        window_seconds: float = 30.0,
+        since: float | None = None,
+    ) -> dict[str, dict[str, float]]:
         by_path: dict[str, list[dict]] = defaultdict(list)
-        for sample in samples:
+        for sample in self._window(app_id, window_seconds, since):
             for probe in sample.get("probes") or []:
                 by_path[probe["path"]].append(probe)
+        stats = {}
+        for path, rows in by_path.items():
+            errors = sum(1 for r in rows if not r.get("ok"))
+            stats[path] = {
+                "p95_ms": round(_percentile([float(r.get("ms") or 0) for r in rows], 95), 1),
+                "error_pct": round(100.0 * errors / len(rows), 1),
+                "count": len(rows),
+            }
+        return stats
+
+    def most_affected_path(
+        self,
+        app_id: str,
+        window_seconds: float = 30.0,
+        since: float | None = None,
+    ) -> str | None:
         best = None
         best_score = -1.0
-        for path, rows in by_path.items():
-            if not rows:
-                continue
-            err = sum(1 for r in rows if not r.get("ok")) / len(rows)
-            p95 = _percentile([float(r.get("ms") or 0) for r in rows], 95)
+        for path, row in self.path_stats(app_id, window_seconds, since).items():
             # Prefer error rate, then latency.
-            score = err * 1000 + p95
+            score = row["error_pct"] * 10 + row["p95_ms"]
             if score > best_score:
                 best_score = score
                 best = path

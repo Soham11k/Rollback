@@ -186,6 +186,23 @@ class Registry:
             return self._read_json(self.release_dir(app_id, version) / "report.json")
         return self._read_json(self.app_dir(app_id) / "last_report.json")
 
+    def write_recording(self, app_id: str, version: str, payload: dict) -> None:
+        self._write_json(self.release_dir(app_id, version) / "recording.json", payload)
+
+    def read_recording(self, app_id: str, version: str) -> dict | None:
+        return self._read_json(self.release_dir(app_id, version) / "recording.json")
+
+    def list_recordings(self, app_id: str) -> list[dict]:
+        root = self.app_dir(app_id) / "releases"
+        if not root.is_dir():
+            return []
+        rows = []
+        for path in sorted(root.glob("*/recording.json")):
+            data = self._read_json(path)
+            if data:
+                rows.append(data)
+        return rows
+
     def write_logs(self, app_id: str, version: str, text: str) -> None:
         path = self.release_dir(app_id, version) / "logs.txt"
         path.parent.mkdir(parents=True, exist_ok=True)

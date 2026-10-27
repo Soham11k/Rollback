@@ -92,6 +92,34 @@ def test_edits_apply_once(tmp_path: Path):
     assert validate_edit({"file": "../x", "search": "a", "replace": "b"})
 
 
+def test_edits_indent_a_block_written_at_column_zero(tmp_path: Path):
+    src = tmp_path / "src"
+    src.mkdir()
+    f = src / "catalog.py"
+    f.write_text("def checkout(code):\n    unit = int(10 * SURGE[code])\n    return unit\n", encoding="utf-8")
+    edits = normalize_edits(
+        [
+            {
+                "file": "catalog.py",
+                "search": "unit = int(10 * SURGE[code])",
+                "replace": "if code in SURGE:\n    unit = int(10 * SURGE[code])\nelse:\n    unit = 10",
+            },
+            {"file": "catalog.py", "search": "    return unit\n", "replace": "    total = unit\n    return total\n"},
+        ]
+    )
+    changed, errors = apply_edits(src, edits)
+    assert errors == []
+    assert f.read_text(encoding="utf-8") == (
+        "def checkout(code):\n"
+        "    if code in SURGE:\n"
+        "        unit = int(10 * SURGE[code])\n"
+        "    else:\n"
+        "        unit = 10\n"
+        "    total = unit\n"
+        "    return total\n"
+    )
+
+
 def test_parse_traceback_and_suspects(tmp_path: Path):
     logs = '''
 Traceback (most recent call last):
@@ -126,6 +154,7 @@ def _point_server_at(registry: Registry, monkeypatch) -> None:
     monkeypatch.setattr(server.WATCHER, "registry", registry)
     monkeypatch.setattr(server.VERIFIER, "registry", registry)
     monkeypatch.setattr(server.AIFIXER, "registry", registry)
+    monkeypatch.setattr(server.GITHUB, "registry", registry)
     monkeypatch.setattr(
         server,
         "ollama_reachable",

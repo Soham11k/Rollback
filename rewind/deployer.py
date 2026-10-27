@@ -176,6 +176,7 @@ def publish_release(
     base_version: str | None = None,
     edits: list[dict] | None = None,
     skip_verify: bool = False,
+    extra: dict | None = None,
 ) -> dict:
     """Materialize source (if any), build/tag image, deploy, return release record."""
     app = registry.get_app(app_id)
@@ -242,6 +243,7 @@ def publish_release(
         "quarantined": False,
         "score": None,
         "decision": None,
+        **(extra or {}),
     }
     registry.write_release(app_id, release)
 

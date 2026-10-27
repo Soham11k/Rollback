@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -97,8 +98,10 @@ def test_v2_bugs_apply_and_frt_raises(tmp_path):
     dest = tmp_path / "src"
     apply_v2_bugs(root, dest, bugs)
     catalog = (dest / "catalog.py").read_text(encoding="utf-8")
-    assert "_RECEIPT_CACHE" in catalog
-    assert "surge[code]" in catalog
+    assert "_resign_holds()" in catalog
+    assert "_SURGE[code]" in catalog
+    assert "_RECENT_RECEIPTS.append" in catalog
+    assert "Bug" not in catalog
 
     # Import patched catalog and expect KeyError on FRT.
     import importlib.util
@@ -115,5 +118,8 @@ def test_v2_bugs_apply_and_frt_raises(tmp_path):
     spec.loader.exec_module(mod)
     with pytest.raises(KeyError):
         mod.checkout("EVT-02", "FRT", 1)
+    started = time.perf_counter()
     ok = mod.checkout("EVT-01", "GA", 1)
     assert ok and ok["status"] == "confirmed"
+    # The hold re-signing loop is the CPU and latency regression.
+    assert time.perf_counter() - started > 0.3

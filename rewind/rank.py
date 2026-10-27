@@ -35,6 +35,21 @@ def _version_key(version: str) -> tuple:
     return tuple(parts)
 
 
+def next_version(versions: list[str]) -> str:
+    """Next major after the highest numeric version, e.g. 2.0.0 -> 3.0.0."""
+    highest: tuple[int, ...] | None = None
+    for version in versions:
+        parts = str(version).split("-")[0].split(".")
+        if not parts or not all(p.isdigit() for p in parts):
+            continue
+        numbers = tuple(int(p) for p in parts)
+        if highest is None or numbers > highest:
+            highest = numbers
+    if highest is None:
+        return "1.0.0"
+    return f"{highest[0] + 1}.0.0"
+
+
 def pick_best(releases: list[dict]) -> dict | None:
     """Highest headroom among verified healthy non-quarantined releases.
 

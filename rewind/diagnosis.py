@@ -39,6 +39,22 @@ def _path_location(path: str | None) -> str:
     return name or _PATH_FALLBACK
 
 
+def _worst_path(path_stats: Any, key: str) -> str | None:
+    """Path with the highest value of key in path_stats, if any is above zero."""
+    if not isinstance(path_stats, dict):
+        return None
+    best_path = None
+    best_value = 0.0
+    for path, row in path_stats.items():
+        if not isinstance(row, dict):
+            continue
+        value = _as_float(row.get(key))
+        if value > best_value:
+            best_value = value
+            best_path = path
+    return best_path
+
+
 def _fix_for(signal: str, location: str) -> str:
     if signal == "cpu":
         return (
@@ -84,6 +100,11 @@ def diagnose_incident(incident: dict | None) -> dict:
         or incident.get("most_affected_endpoint")
     )
     route = _path_location(affected if isinstance(affected, str) else None)
+    path_stats = incident.get("path_stats")
+    signal_routes = {
+        "latency_p95": _worst_path(path_stats, "p95_ms") or route,
+        "error_rate": _worst_path(path_stats, "error_pct") or route,
+    }
 
     bugs: list[dict] = []
     for signal in FEATURE_NAMES:
@@ -91,7 +112,7 @@ def diagnose_incident(incident: dict | None) -> dict:
         limit = LIMITS[signal]
         if value <= limit:
             continue
-        location = _PROCESS_LOCATION if signal in {"cpu", "memory"} else route
+        location = signal_routes.get(signal, _PROCESS_LOCATION)
         bugs.append(
             {
                 "signal": signal,
