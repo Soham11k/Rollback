@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Missing · RewindAI{% endblock %}
+{% block body %}
+<section class="hero">
+  <p class="kicker">404</p>
+  <h1>No app named {{ app_id }}.</h1>
+  <p class="lede"><a href="{{ url_for('index') }}">Back to apps</a></p>
+</section>
+{% endblock %}

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}GatePass{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="mast">
+    <div class="mast-inner">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="GatePass">
+        <span class="brand-word"><span class="brand-mark">G</span>ATEPASS</span>
+        <small>Flash-sale tickets</small>
+      </a>
+      <nav>
+        <a href="{{ url_for('index') }}" {% if request.endpoint in ('index', 'event_page', 'checkout_page') %}class="active"{% endif %}>Events</a>
+        <a href="{{ url_for('console_redirect') }}">RewindAI</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+  <footer class="site-foot">
+    <div class="site-foot-inner">
+      <span>RELEASE {{ version }}</span>
+      <span {% if fault_mode != 'none' %}class="fault-warn"{% endif %}>FAULT {{ fault_mode }}</span>
+    </div>
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

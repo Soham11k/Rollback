@@ -1,0 +1,7 @@
+[
+  {
+    "file": "app.py",
+    "search": "            note = next((n for n in NOTES if n[\"id\"] == note_id), None)\n            if note is None:\n                self._send(404, {\"status\": \"not_found\"})\n                return\n            # Optional fault via query ?boom=1 for demo bad releases.\n            qs = parse_qs(parsed.query)\n            if qs.get(\"boom\") == [\"1\"]:\n                raise RuntimeError(\"intentional notes boom\")\n            self._send(200, note)\n",
+    "replace": "            note = next((n for n in NOTES if n[\"id\"] == note_id), None)\n            if note is None:\n                self._send(404, {\"status\": \"not_found\"})\n                return\n            # v2 always raises on note detail — RewindAI should catch it.\n            raise RuntimeError(\"notes v2 detail path is broken\")\n"
+  }
+]

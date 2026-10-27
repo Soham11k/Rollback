@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}RewindAI{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="mast">
+    <div class="mast-inner">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="RewindAI">
+        <span class="brand-word"><span class="brand-mark">R</span>EWIND<span class="brand-ai">AI</span></span>
+        <small>Watch · Rank · Roll back · Fix</small>
+      </a>
+      <nav>
+        <a href="{{ url_for('index') }}" {% if request.endpoint == 'index' %}class="active"{% endif %}>Apps</a>
+        <a href="http://localhost:3000/d/rewindai-overview" target="_blank" rel="noopener">Grafana</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+  <footer class="site-foot">
+    <div class="site-foot-inner">
+      <span>REWINDAI</span>
+      <span>FREE LOCAL AI · OLLAMA</span>
+    </div>
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

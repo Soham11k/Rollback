@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.DS_Store
+._*
+
+# Local state and trained models (keep directories via .gitkeep)
+state/*
+!state/.gitkeep
+detector/models/*
+!detector/models/.gitkeep
+detector/data/*
+!detector/data/.gitkeep
+
+# Runner / IDE
+.actions-runner/
+.idea/
+.vscode/

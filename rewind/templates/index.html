@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Apps · RewindAI{% endblock %}
+{% block body %}
+<section class="hero">
+  <p class="kicker">RewindAI · developer console</p>
+  <h1>Any app. Any version. Pick the best one.</h1>
+  <p class="lede">Register a project, publish versions, watch them without code changes. When a release goes bad, roll back to the best version or fix it with local AI.</p>
+</section>
+
+<section class="status-band">
+  <div>
+    <span class="label">Apps</span>
+    <span class="value">{{ apps|length }}</span>
+  </div>
+  <div class="{% if ollama.ok %}verdict-healthy{% else %}verdict-idle{% endif %}">
+    <span class="label">Ollama</span>
+    <span class="value">{% if ollama.ok %}{% if ollama.has_model %}READY{% else %}NO MODEL{% endif %}{% else %}OFFLINE{% endif %}</span>
+  </div>
+  <div>
+    <span class="label">Model</span>
+    <span class="value mono" style="font-size:0.85rem">{{ ollama.model or '—' }}</span>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Registered apps</h2>
+  {% if apps %}
+  <table class="releases-table">
+    <thead>
+      <tr>
+        <th>App</th>
+        <th>Live</th>
+        <th>Best</th>
+        <th>Verdict</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in apps %}
+      <tr>
+        <td>
+          <strong>{{ row.name }}</strong>
+          <div class="mono muted">{{ row.id }} · :{{ row.host_port }}</div>
+        </td>
+        <td class="mono">{{ row.live_version or '—' }}</td>
+        <td class="mono">{{ row.best_version or '—' }}</td>
+        <td>
+          <span class="badge {% if row.verdict == 'anomaly' %}quarantined{% elif row.verdict == 'healthy' %}live{% else %}best{% endif %}">{{ row.verdict }}</span>
+        </td>
+        <td><a class="btn" href="{{ url_for('app_console', app_id=row.id) }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No apps yet. Register GatePass or your own project below.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Register an app</h2>
+  <p class="note">No instrumentation required. RewindAI uses docker stats and HTTP probes.</p>
+  <form class="register-form" method="post" action="{{ url_for('api_register') }}" data-register>
+    <label>Id <input class="mono" name="id" required placeholder="gatepass" pattern="[a-z][a-z0-9-]{1,31}"></label>
+    <label>Name <input name="name" placeholder="GatePass"></label>
+    <label>Host port <input class="mono" name="host_port" type="number" value="8080"></label>
+    <label>Container port <input class="mono" name="container_port" type="number" value="8080"></label>
+    <label>Health <input class="mono" name="health_path" value="/health"></label>
+    <label>Probe paths <input class="mono" name="probe_paths" value="/" placeholder="/api/a,/api/b"></label>
+    <label>On anomaly
+      <select name="on_anomaly">
+        <option value="rollback" selected>rollback to best</option>
+        <option value="ask">ask the developer</option>
+      </select>
+    </label>
+    <button class="btn" type="submit">Register</button>
+  </form>
+  <p class="note" data-register-status hidden></p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var form = document.querySelector("[data-register]");
+  if (!form) return;
+  var status = document.querySelector("[data-register-status]");
+  form.addEventListener("submit", function (evt) {
+    evt.preventDefault();
+    var data = Object.fromEntries(new FormData(form).entries());
+    if (data.probe_paths) {
+      data.probe_paths = String(data.probe_paths).split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    data.host_port = Number(data.host_port || 8080);
+    data.container_port = Number(data.container_port || 8080);
+    fetch("/api/apps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    }).then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (res) {
+        if (status) {
+          status.hidden = false;
+          status.textContent = res.status >= 400
+            ? (res.body.message || "Register failed")
+            : ("Registered " + res.body.app.id);
+        }
+        if (res.status < 400) {
+          window.location.href = "/apps/" + res.body.app.id;
+        }
+      });
+  });
+})();
+</script>
+{% endblock %}

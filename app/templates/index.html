@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Events · GatePass{% endblock %}
+{% block body %}
+<section class="hero">
+  <p class="kicker">Flash sale open</p>
+  <h1>Pick an event. Claim a seat before the wave sells out.</h1>
+  <p class="lede">Stub checkout only — booking references, no payments. Safe to roll the app release back.</p>
+</section>
+
+{% set max_seats = events|map(attribute='seats_left')|max if events else 1 %}
+<section class="seats-chart">
+  <h2>Seats left</h2>
+  {% for event in events %}
+  <div class="bar-row">
+    <span class="mono">{{ event.id }}</span>
+    <div class="bar-track" title="{{ event.title }}">
+      <div class="bar-fill" style="width: {{ (100.0 * event.seats_left / max_seats)|round(1) }}%"></div>
+    </div>
+    <span class="mono">{{ event.seats_left }}</span>
+  </div>
+  {% endfor %}
+</section>
+
+<ul class="event-grid">
+  {% for event in events %}
+  <li class="ticket-stub">
+    <a href="{{ url_for('event_page', event_id=event.id) }}">
+      <div class="ticket-date">
+        <span class="day">{{ event.day }}</span>
+        <span class="month">{{ event.month }}</span>
+      </div>
+      <div class="ticket-body">
+        <span class="mono ticket-meta">{{ event.id }}</span>
+        <strong>{{ event.title }}</strong>
+        <span class="muted ticket-meta">{{ event.venue }} · {{ event.time }}</span>
+        <div class="tier-stack" aria-hidden="true">
+          {% for tier in event.tiers %}
+          <span class="tier-seg {{ tier.pattern }}" style="width: {{ tier.share_pct }}%"></span>
+          {% endfor %}
+        </div>
+        <span class="price-tag">From ₹{{ event.from_price }}</span>
+      </div>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}

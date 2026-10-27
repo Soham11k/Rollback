@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Checkout · GatePass{% endblock %}
+{% block body %}
+{% if result.status == 'confirmed' %}
+<section class="ticket-print">
+  {% if result.status == 'confirmed' %}
+  <div class="admit-stamp">Admit one</div>
+  {% endif %}
+  <div class="ticket-print-inner">
+    <div class="ticket-print-main">
+      <p class="kicker">Booking confirmed</p>
+      <p class="booking-ref">{{ result.booking_ref }}</p>
+      <p class="meta">{{ result.event_title }} · {{ result.tier_label }} × {{ result.qty }}</p>
+      <p class="meta">{{ result.venue }} · {{ result.starts_at }}</p>
+      <p class="note">Total ₹{{ result.total_inr }} · {{ result.note }}</p>
+      <a class="text-link" href="{{ url_for('index') }}">Back to events</a>
+    </div>
+    <div class="barcode" aria-label="barcode" data-barcode="{{ result.booking_ref }}">
+      {% for cls in result.barcode_bars %}
+      <span class="{{ cls }}"></span>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% else %}
+<section class="panel">
+  <div class="slip-head">
+    <div>
+      <p class="kicker">Checkout blocked</p>
+      <h1>{{ result.message }}</h1>
+      <p class="meta">{{ result.event_id }} · tier {{ result.tier }} · asked {{ result.requested }} · left {{ result.remaining }}</p>
+    </div>
+    <p class="stamp short">Sold out</p>
+  </div>
+  <a class="text-link" href="{{ url_for('index') }}">Back to events</a>
+</section>
+{% endif %}
+{% endblock %}

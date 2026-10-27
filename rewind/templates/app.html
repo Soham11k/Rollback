@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}{{ app.name }} · RewindAI{% endblock %}
+{% block body %}
+<section class="hero">
+  <p class="kicker">{{ app.name }} · {{ app.id }}</p>
+  <h1>You shipped a bad release. Buyers should not wait.</h1>
+  <p class="lede">See where the bugs are. Revert to the best published version, or stay and fix with local AI.</p>
+</section>
+
+<section class="status-band" data-status-band data-app="{{ app.id }}">
+  <div>
+    <span class="label">Live</span>
+    <span class="value" data-live>{{ app.live_version or '—' }}</span>
+  </div>
+  <div>
+    <span class="label">Best</span>
+    <span class="value" data-best>{{ app.best_version or '—' }}</span>
+  </div>
+  <div class="{% if app.last_decision == 'anomaly' %}verdict-anomaly{% elif app.last_decision == 'healthy' %}verdict-healthy{% else %}verdict-idle{% endif %}" data-verdict-cell>
+    <span class="label">Verdict</span>
+    <span class="value" data-verdict>{{ app.last_decision or 'idle' }}</span>
+  </div>
+  <div class="{% if ollama.ok %}verdict-healthy{% else %}verdict-idle{% endif %}">
+    <span class="label">Ollama</span>
+    <span class="value">{% if ollama.ok %}ON{% else %}OFF{% endif %}</span>
+  </div>
+</section>
+
+<section class="panel diagnosis-panel" data-diagnosis data-app="{{ app.id }}">
+  <h2>Where the bugs are</h2>
+  {% if diagnosis and diagnosis.has_bugs %}
+  <p class="note">
+    {% if diagnosis.version %}<span class="mono">{{ diagnosis.version }}</span> · {% endif %}
+    {{ diagnosis.summary }}
+    {% if diagnosis.most_affected_path and not diagnosis.model_only %}
+      · hottest path <span class="mono">{{ diagnosis.most_affected_path }}</span>
+    {% endif %}
+  </p>
+  <ol class="bug-list">
+    {% for bug in diagnosis.bugs %}
+    <li class="bug-row">
+      <div class="bug-signal">
+        <span class="mono">{{ bug.signal }}</span>
+        <span class="mono">{{ '%.0f'|format(bug.value) }}{{ bug.unit }}</span>
+        <span class="muted">limit {{ '%.0f'|format(bug.limit) }}{{ bug.unit }}</span>
+      </div>
+      <div class="bug-where">
+        <span class="muted">Where</span>
+        <strong class="mono">{{ bug.location }}</strong>
+      </div>
+      <p class="bug-fix">{{ bug.fix }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+  {% if report and report.suspects %}
+  <h3 style="margin-top:1rem">Suspect code</h3>
+  <ol class="suspect-list">
+    {% for s in report.suspects[:8] %}
+    <li class="suspect-row">
+      <div class="bug-signal">
+        <span class="mono">{{ s.file }}{% if s.line %}:{{ s.line }}{% endif %}</span>
+        <span class="muted">{{ s.from }}</span>
+      </div>
+      <p class="bug-fix">{{ s.reason }}</p>
+      {% if s.code %}<code class="suspect-code mono">{{ s.code }}</code>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  <div class="diagnosis-choice">
+    <div class="choice-block">
+      <h3>Revert to best</h3>
+      {% if can_revert_to_best and best_release %}
+      <p class="note">Restore <span class="mono">{{ best_release.version }}</span> (score {{ best_release.score }}). Automatic rollback uses the same BEST image.</p>
+      {% if releases|length > 2 %}
+      <p class="note">More than two versions are published. This button restores BEST; pick another row below if you want a different image.</p>
+      {% endif %}
+      <button type="button" class="btn" data-pick="{{ best_release.version }}" data-force="{% if best_release.quarantined %}1{% else %}0{% endif %}">Revert to best</button>
+      {% else %}
+      <p class="note">Live is already BEST{% if app.best_version %} (<span class="mono">{{ app.best_version }}</span>){% endif %}, or no scored healthy release yet.</p>
+      {% endif %}
+    </div>
+    <div class="choice-block stay-block">
+      <h3>Stay — fix with AI</h3>
+      {% if report and report.can_ai_fix %}
+      <p class="note">Do not revert. Ask the local Ollama model for a patch, review the diff, then ship a new version.</p>
+      <button type="button" class="btn" data-ai-fix {% if not ollama.ok %}disabled{% endif %}>Fix with AI</button>
+      {% if not ollama.ok %}
+      <p class="note">Ollama offline. Run <code>./scripts/ai-setup.sh</code> on the Mac.</p>
+      {% endif %}
+      {% else %}
+      <p class="note">AI fix needs a source-backed bad release compared to a best release. Image-only publishes skip this path.</p>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <p class="empty">{{ diagnosis.summary if diagnosis else 'No crossed signals yet.' }}</p>
+  {% endif %}
+</section>
+
+{% if fix %}
+<section class="panel" data-fix-panel data-app="{{ app.id }}">
+  <h2>AI proposal</h2>
+  <p class="note">Status <span class="mono" data-fix-status>{{ fix.status }}</span>{% if fix.job_id or fix.id %} · job <span class="mono">{{ fix.job_id or fix.id }}</span>{% endif %}</p>
+  {% if fix.error %}<p class="note" style="color:var(--alarm)">{{ fix.error }}</p>{% endif %}
+  {% if fix.summary %}<p>{{ fix.summary }}</p>{% endif %}
+  {% if fix.bugs %}
+  <ul class="matches">
+    {% for b in fix.bugs %}
+    <li><span class="mono">{{ b.file }}{% if b.line %}:{{ b.line }}{% endif %}</span> <span>{{ b.reason }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if fix.diff %}<pre class="fix-diff mono" data-fix-diff>{{ fix.diff }}</pre>{% endif %}
+  {% if fix.status == 'ready' %}
+  <div class="fix-actions">
+    <label class="mono">Ship as <input data-ship-version value="3.0.0" size="8"></label>
+    <button type="button" class="btn" data-ship>Ship fix</button>
+    <button type="button" class="btn danger" data-discard>Discard</button>
+  </div>
+  {% elif fix.status == 'running' %}
+  <p class="note">Waiting on Ollama…</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel releases-panel" data-releases data-app="{{ app.id }}">
+  <h2>Published releases</h2>
+  <p class="note">Scores are headroom vs verify limits. BEST is what RewindAI restores on anomaly.</p>
+  {% if releases %}
+  <table class="releases-table">
+    <thead>
+      <tr>
+        <th>Version</th>
+        <th>Score</th>
+        <th>Badges</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in releases %}
+      <tr data-version="{{ row.version }}" {% if row.live %}class="is-live"{% endif %}>
+        <td class="mono">{{ row.version }}<div class="muted">{{ row.image }}</div></td>
+        <td class="mono">{% if row.score is not none %}{{ row.score }}{% else %}—{% endif %}</td>
+        <td class="badges">
+          {% if row.live %}<span class="badge live">Live</span>{% endif %}
+          {% if row.best %}<span class="badge best">Best</span>{% endif %}
+          {% if row.quarantined %}<span class="badge quarantined">Quarantined</span>{% endif %}
+          {% if row.decision == 'healthy' and not row.quarantined and not row.live and not row.best %}<span class="muted">ok</span>{% endif %}
+        </td>
+        <td>
+          {% if row.live %}
+          <span class="muted">Serving</span>
+          {% elif row.quarantined %}
+          <button type="button" class="btn pick-anyway" data-pick="{{ row.version }}" data-force="1">Pick anyway</button>
+          {% else %}
+          <button type="button" class="btn" data-pick="{{ row.version }}" data-force="0">Pick this</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="note" data-pick-status hidden></p>
+  {% else %}
+  <p class="empty">No releases yet. Publish with <code>./scripts/rewind.sh publish</code>.</p>
+  {% endif %}
+</section>
+
+<section class="numeral-grid">
+  <article class="numeral">
+    <p>Time to detect</p>
+    <strong>{% if incident and incident.time_to_detect_s is not none %}{{ incident.time_to_detect_s }}s{% else %}—{% endif %}</strong>
+  </article>
+  <article class="numeral">
+    <p>Time to rollback</p>
+    <strong>{% if incident and incident.time_to_rollback_s is not none %}{{ incident.time_to_rollback_s }}s{% else %}—{% endif %}</strong>
+  </article>
+  <article class="numeral">
+    <p>Peak p95</p>
+    <strong>{% if incident and incident.peaks %}{{ '%.0f'|format(incident.peaks.latency_p95 or 0) }}ms{% else %}—{% endif %}</strong>
+  </article>
+  <article class="numeral">
+    <p>Host port</p>
+    <strong>{{ app.host_port }}</strong>
+  </article>
+</section>
+
+<section class="charts-wrap" data-charts data-app="{{ app.id }}">
+  <h2>What RewindAI saw</h2>
+  <div class="charts-body">
+    <div class="chart-row" data-chart="cpu" data-thresh="80" data-unit="%">
+      <div class="chart-label"><span>CPU %</span><span data-live-val>—</span></div>
+      <svg viewBox="0 0 600 72" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="chart-row" data-chart="memory" data-thresh="80" data-unit="%">
+      <div class="chart-label"><span>Memory %</span><span data-live-val>—</span></div>
+      <svg viewBox="0 0 600 72" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="chart-row" data-chart="p95_ms" data-thresh="1000" data-unit="ms">
+      <div class="chart-label"><span>p95 latency</span><span data-live-val>—</span></div>
+      <svg viewBox="0 0 600 72" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="chart-row" data-chart="error_pct" data-thresh="5" data-unit="%">
+      <div class="chart-label"><span>Error rate</span><span data-live-val>—</span></div>
+      <svg viewBox="0 0 600 72" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+</section>
+
+<section class="panel contrast" data-contrast data-app="{{ app.id }}">
+  <h2>Health vs probes</h2>
+  <div class="contrast-grid">
+    <article class="probe" id="probe-health">
+      <p class="probe-label">{{ app.health_path }}</p>
+      <p class="probe-value" data-status>—</p>
+      <p class="probe-meta" data-ms>waiting</p>
+    </article>
+    {% for path in app.probe_paths[:2] %}
+    <article class="probe" data-probe-path="{{ path }}">
+      <p class="probe-label">{{ path }}</p>
+      <p class="probe-value" data-status>—</p>
+      <p class="probe-meta" data-ms>waiting</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel receipt">
+  <h2>Incident card</h2>
+  {% if incident %}
+  <div class="incident-grid">
+    <p><span class="muted">Decision</span> <strong>{{ incident.decision or '—' }}</strong></p>
+    <p><span class="muted">Version</span> <strong>{{ incident.version or '—' }}</strong></p>
+    <p><span class="muted">Most affected</span> <strong class="mono">{{ incident.most_affected_path or '—' }}</strong></p>
+  </div>
+  {% if incident.peaks %}
+  <p class="note">
+    Peaks · cpu {{ '%.0f'|format(incident.peaks.cpu or 0) }}% ·
+    mem {{ '%.0f'|format(incident.peaks.memory or 0) }}% ·
+    p95 {{ '%.0f'|format(incident.peaks.latency_p95 or 0) }} ms ·
+    errors {{ '%.1f'|format(incident.peaks.error_rate or 0) }}%
+  </p>
+  {% endif %}
+  {% else %}
+  <p class="empty">No incident yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='console.js') }}" defer></script>
+{% endblock %}

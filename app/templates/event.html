@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ event.title }} · GatePass{% endblock %}
+{% block body %}
+<section class="hero">
+  <p class="kicker">{{ event.id }} · {{ event.day }} {{ event.month }} · {{ event.time }}</p>
+  <h1>{{ event.title }}</h1>
+  <p class="lede">{{ event.venue }} — {{ event.blurb }}</p>
+</section>
+
+<div class="event-layout">
+  <section class="seat-map-panel">
+    <h2>Seat blocks</h2>
+    <p class="note">One square ≈ 10 seats remaining. Hatched = sold pressure on VIP/premium tiers.</p>
+    {% for tier in event.tiers %}
+    <p class="kicker" style="margin-top:0.85rem">{{ tier.label }} · {{ tier.remaining }} left</p>
+    <div class="seat-map" aria-label="{{ tier.label }} seat map">
+      {% for _ in range(tier.blocks) %}
+      <span class="seat-sq {{ tier.block_class }}"></span>
+      {% endfor %}
+      {% if tier.blocks == 0 %}
+      <span class="seat-sq taken"></span>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="seat-legend">
+      <span><i class="seat-sq" style="display:inline-block"></i> Open</span>
+      <span><i class="seat-sq tier-vip" style="display:inline-block"></i> Premium</span>
+      <span><i class="seat-sq taken" style="display:inline-block"></i> Empty</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="slip-head">
+      <div>
+        <h2 style="border:0;margin:0;padding:0">Tiers</h2>
+        <p class="meta">{{ event.seats_left }} seats across {{ event.tiers|length }} tiers</p>
+      </div>
+      <p class="stamp {% if event.seats_left > 0 %}ok{% else %}short{% endif %}">
+        {% if event.seats_left > 0 %}{{ event.seats_left }} left{% else %}sold out{% endif %}
+      </p>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Tier</th>
+          <th>Price</th>
+          <th>Left</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tier in event.tiers %}
+        <tr>
+          <td>{{ tier.label }} <span class="mono muted">({{ tier.code }})</span></td>
+          <td>₹{{ tier.price_inr }}</td>
+          <td class="{% if tier.available %}status-available{% else %}status-short{% endif %}">{{ tier.remaining }}</td>
+          <td>
+            {% if tier.available %}
+            <form action="{{ url_for('checkout_page', event_id=event.id) }}" method="post" class="inline-form">
+              <input type="hidden" name="tier" value="{{ tier.code }}">
+              <input type="hidden" name="qty" value="1">
+              <button type="submit">Checkout</button>
+            </form>
+            {% else %}
+            <span class="muted">Unavailable</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <a class="text-link" href="{{ url_for('index') }}">All events</a>
+  </section>
+</div>
+{% endblock %}

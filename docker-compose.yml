@@ -1,0 +1,110 @@
+name: rollbackai
+
+services:
+  rewind:
+    image: rollbackai-rewind:latest
+    build: ./rewind
+    container_name: rewindai
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      REWIND_DATA: /data
+      REWIND_NETWORK: rollbackai
+      OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen2.5-coder:7b
+      VERIFY_WINDOW_SECONDS: "60"
+      SAMPLE_INTERVAL_SECONDS: "5"
+      MAJORITY_WINDOW: "3"
+      PORT: "8090"
+    volumes:
+      - rewind-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - rollbackai
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: rollbackai-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    networks:
+      - rollbackai
+    restart: unless-stopped
+
+  grafana:
+    image: rollbackai-grafana:latest
+    build:
+      context: ./monitoring/grafana/image
+    container_name: rollbackai-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - rollbackai
+    restart: unless-stopped
+
+  loadgen:
+    image: rollbackai-loadgen:latest
+    build: ./loadgen
+    container_name: rollbackai-loadgen
+    environment:
+      BASE_URL: http://gatepass:8080
+      LOADGEN_RPS: "2"
+    depends_on:
+      - prometheus
+    networks:
+      - rollbackai
+    restart: unless-stopped
+
+  # Legacy single-app detector kept for CI/scripts/deploy.sh path.
+  detector:
+    image: rollbackai-detector:latest
+    build: ./detector
+    container_name: rollbackai-detector
+    profiles: ["legacy"]
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      METRICS_PORT: "9091"
+      MODEL_PATH: /models/baseline.joblib
+      STATE_DIR: /state
+      HOST_STATE_DIR: ${PWD}/state
+      PROJECT_ROOT: /project
+      MODE: idle
+    volumes:
+      - ./detector/models:/models
+      - ./detector/data:/data
+      - ./state:/state
+      - ./scripts:/scripts:ro
+      - .:/project
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "9091:9091"
+    depends_on:
+      - prometheus
+    networks:
+      - rollbackai
+    restart: unless-stopped
+
+networks:
+  rollbackai:
+    name: rollbackai
+
+volumes:
+  rewind-data:

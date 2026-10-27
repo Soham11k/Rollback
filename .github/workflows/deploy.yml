@@ -1,0 +1,132 @@
+name: RewindAI CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      fault_mode:
+        description: "Fault injection mode for this GatePass deploy"
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - cpu
+          - memory
+          - latency
+          - errors
+          - all
+      app_version:
+        description: "Version label shown in metrics/alerts"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: rollbackai-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      version: ${{ steps.meta.outputs.version }}
+      fault_mode: ${{ steps.meta.outputs.fault_mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install app deps and test
+        working-directory: app
+        run: |
+          python seed.py
+          pip install -r requirements.txt
+          PYTHONPATH=. pytest -q
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        run: |
+          FAULT_MODE="${{ github.event.inputs.fault_mode || 'none' }}"
+          VERSION="${{ github.event.inputs.app_version }}"
+          if [ -z "$VERSION" ]; then
+            if [ "$FAULT_MODE" = "none" ]; then
+              VERSION="1.0.0-${GITHUB_SHA::7}"
+            else
+              VERSION="2.0.0-${GITHUB_SHA::7}"
+            fi
+          fi
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${IMAGE_NAME}:${GITHUB_SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "fault_mode=${FAULT_MODE}" >> "$GITHUB_OUTPUT"
+          echo "Building GatePass ${IMAGE} version=${VERSION} fault_mode=${FAULT_MODE}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy GatePass release
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/deploy.sh \
+            "${{ needs.build.outputs.image }}" \
+            "${{ needs.build.outputs.version }}" \
+            "${{ needs.build.outputs.fault_mode }}"
+
+      - name: Verify with RewindAI (Isolation Forest)
+        id: verify
+        run: |
+          python3 -m pip install -q -r detector/requirements.txt
+          set +e
+          python3 detector/monitor.py \
+            --version "${{ needs.build.outputs.version }}" \
+            --mode isolation_forest \
+            --model detector/models/baseline.joblib \
+            --window "${VERIFY_WINDOW_SECONDS:-180}" \
+            --interval 5 \
+            --majority 5 \
+            --project-root . \
+            --metrics-port 9092 \
+            --result-file state/last_verify.json
+          CODE=$?
+          set -e
+          echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
+          if [ "$CODE" -eq 2 ]; then
+            echo "::error::Anomaly detected — RewindAI rolled back and quarantined the bad release"
+            exit 1
+          fi
+          if [ "$CODE" -ne 0 ]; then
+            echo "::error::Monitor failed with code ${CODE}"
+            exit "$CODE"
+          fi
+          echo "Deployment verified healthy and promoted to stable"

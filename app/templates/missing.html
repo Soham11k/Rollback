@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Not found · GatePass{% endblock %}
+{% block body %}
+<section class="panel">
+  <p class="giant-code ink">404</p>
+  <h2>Unknown event</h2>
+  <p class="empty">No event <span class="mono">{{ event_id }}</span> in this flash sale.</p>
+  <a class="text-link" href="{{ url_for('index') }}">Browse events</a>
+</section>
+{% endblock %}
