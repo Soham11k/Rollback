@@ -1025,4 +1025,16 @@
       loadScan(scanSelect.value, true);
     });
   }
+
+  // —— Visual Pipeline Bar click-to-jump ——
+  document.querySelectorAll("[data-jump]").forEach(function (stepEl) {
+    stepEl.addEventListener("click", function () {
+      var sel = stepEl.getAttribute("data-jump");
+      if (!sel) return;
+      var target = document.querySelector(sel);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  });
 })();

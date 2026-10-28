@@ -178,6 +178,136 @@ def _ensure_release_scans(app_id: str, releases: list[dict]) -> list[dict]:
     return releases
 
 
+def _pipeline_steps(
+    record: dict,
+    releases: list[dict],
+    last_incident: dict | None,
+    verifying: dict | None,
+    active_scan: dict | None,
+    comparison: dict | None,
+    fix: dict | None,
+    resolved_by: str | None,
+) -> list[dict]:
+    """Five-stage DevSecOps lifecycle bar so any viewer sees how RewindAI works and where the app is."""
+    live = record.get("live_version")
+    gh = record.get("github") or {}
+
+    # 1. Publish / GitHub CD
+    if releases:
+        latest = releases[0]
+        if gh.get("repo"):
+            s1_detail = f"{gh['repo']}@{gh.get('branch', 'release')} · {len(releases)} release(s)"
+        elif latest.get("fixes_version"):
+            s1_detail = f"{latest['version']} (AI fix of {latest['fixes_version']}) · {len(releases)} total"
+        else:
+            s1_detail = f"Latest {latest['version']} · {len(releases)} published"
+        s1_state = "done"
+    else:
+        s1_detail = "Push to GitHub or run rewind.sh publish"
+        s1_state = "active"
+
+    # 2. DevSecOps Scan & SBOM
+    if active_scan:
+        grade = active_scan.get("grade") or "—"
+        total = (active_scan.get("counts") or {}).get("total", 0)
+        pkgs = (active_scan.get("sbom_summary") or {}).get("package_count", 0)
+        s2_detail = f"Grade {grade} ({active_scan.get('score', 0)}/100) · {total} finding(s) · {pkgs} SBOM pkgs"
+        s2_state = "alert" if grade in {"C", "D", "F"} else "done"
+    else:
+        s2_detail = "Bandit SAST · pip-audit · Trivy SBOM · Dockerfile"
+        s2_state = "idle"
+
+    # 3. Runtime Verify & Auto-Rollback
+    if verifying:
+        s3_detail = (
+            f"Verifying {verifying['version']} · {int(verifying.get('elapsed_s') or 0)}/{verifying.get('window_s')}s"
+            f" · votes {verifying.get('votes', 0)}/{verifying.get('majority', 3)}"
+        )
+        s3_state = "active"
+    elif last_incident and not resolved_by:
+        bad_v = last_incident.get("version")
+        rest_v = last_incident.get("restored_version") or record.get("best_version") or "BEST"
+        ttr = last_incident.get("time_to_rollback_s")
+        s3_detail = f"{bad_v} failed → rolled back to {rest_v} in {ttr}s"
+        s3_state = "alert"
+    elif live:
+        best_v = record.get("best_version") or live
+        s3_detail = f"Live {live} healthy · BEST {best_v}"
+        s3_state = "done"
+    else:
+        s3_detail = "60s live traffic check + Isolation Forest"
+        s3_state = "idle"
+
+    # 4. Diagnose & Before/After Diff
+    if comparison and comparison.get("available"):
+        b_ver = comparison["before"]["version"]
+        a_ver = comparison["after"]["version"]
+        ast_total = (comparison.get("ast_changes") or {}).get("total_changed", 0)
+        s4_detail = f"Diffing {b_ver} → {a_ver} · {ast_total} AST symbol(s) changed"
+        s4_state = "active" if (last_incident and not resolved_by) else "done"
+    elif last_incident:
+        s4_detail = f"Pinpointed {last_incident.get('version')} traceback & slow routes"
+        s4_state = "active"
+    else:
+        s4_detail = "Route p95/errors + AST & side-by-side diff"
+        s4_state = "idle"
+
+    # 5. Local AI Fix (Ollama)
+    if resolved_by:
+        s5_detail = f"Shipped {resolved_by} · verified healthy"
+        s5_state = "done"
+    elif fix and fix.get("status") == "ready":
+        s5_detail = f"Patch ready for review → ship { _suggested_version(record['id']) }"
+        s5_state = "active"
+    elif fix and fix.get("status") == "running":
+        s5_detail = "Ollama generating & validating patch…"
+        s5_state = "active"
+    elif last_incident:
+        s5_detail = f"Ready to patch {last_incident.get('version')} with local Ollama"
+        s5_state = "active"
+    else:
+        s5_detail = "qwen2.5-coder:7b patches runtime + SAST bugs"
+        s5_state = "idle"
+
+    return [
+        {
+            "step": "01",
+            "title": "Publish / GitHub CD",
+            "detail": s1_detail,
+            "state": s1_state,
+            "target": "[data-releases]",
+        },
+        {
+            "step": "02",
+            "title": "DevSecOps Scan",
+            "detail": s2_detail,
+            "state": s2_state,
+            "target": "[data-scanner]",
+        },
+        {
+            "step": "03",
+            "title": "Verify & Roll Back",
+            "detail": s3_detail,
+            "state": s3_state,
+            "target": "[data-replay]",
+        },
+        {
+            "step": "04",
+            "title": "Before vs After Diff",
+            "detail": s4_detail,
+            "state": s4_state,
+            "target": "[data-inspector]",
+        },
+        {
+            "step": "05",
+            "title": "Fix with Local AI",
+            "detail": s5_detail,
+            "state": s5_state,
+            "target": "[data-fix-panel], [data-diagnosis]",
+        },
+    ]
+
+
 def _console_context(app_id: str) -> dict:
     record = _app_or_404(app_id)
     releases = _ensure_release_scans(
@@ -217,6 +347,18 @@ def _console_context(app_id: str) -> dict:
         comparison = compare_releases(REGISTRY, app_id)
     except Exception:  # noqa: BLE001
         comparison = {"app_id": app_id, "available": False, "presets": []}
+    resolved = _resolved_by(app_id, last_incident)
+    fix = AIFIXER.get_fix(app_id)
+    pipeline = _pipeline_steps(
+        record,
+        releases,
+        last_incident,
+        verifying,
+        active_scan,
+        comparison,
+        fix,
+        resolved,
+    )
     return {
         "app": record,
         "releases": releases,
@@ -226,17 +368,18 @@ def _console_context(app_id: str) -> dict:
         "diagnosis": diagnosis,
         "best_release": best,
         "can_revert_to_best": can_revert,
-        "fix": AIFIXER.get_fix(app_id),
+        "fix": fix,
         "ollama": ollama_reachable(),
         "probes": WATCHER.latest_probes(app_id),
         "verifying": verifying,
         "live_health": live_health,
         "hero": _hero(record, live_health, last_incident, verifying),
         "suggested_version": _suggested_version(app_id),
-        "resolved_by": _resolved_by(app_id, last_incident),
+        "resolved_by": resolved,
         "limits": LIMITS,
         "scan": active_scan,
         "compare": comparison,
+        "pipeline": pipeline,
     }
 
 

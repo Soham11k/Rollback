@@ -40,6 +40,27 @@
   </div>
 </section>
 
+{% if pipeline %}
+<section class="pipeline-bar" data-pipeline aria-label="RewindAI DevSecOps pipeline">
+  <div class="pipeline-head">
+    <span class="pipeline-title">How RewindAI works · Click any stage to jump</span>
+    <span class="mono muted">Zero app code changes · Automated guardrails from commit to fix</span>
+  </div>
+  <ol class="pipeline-steps">
+    {% for stage in pipeline %}
+    <li class="pipeline-step step-{{ stage.state }}" data-jump="{{ stage.target }}">
+      <div class="step-top">
+        <span class="step-num mono">{{ stage.step }}</span>
+        <span class="step-badge">{{ stage.state }}</span>
+      </div>
+      <strong class="step-name">{{ stage.title }}</strong>
+      <span class="step-detail mono">{{ stage.detail }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
 <section class="panel diagnosis-panel" data-diagnosis data-app="{{ app.id }}">
   <h2>Where the bugs are</h2>
   {% if diagnosis and diagnosis.has_bugs %}
