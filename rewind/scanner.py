@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -446,10 +447,8 @@ def run_pip_audit(src_dir: Path, packages: list[dict[str, Any]]) -> tuple[list[d
                     }
                 )
 
-    # 2. Optional live pip-audit CLI pass (bounded timeout so offline runs never hang).
-    # In 2026+, PyPI advisories are informational (medium) so baseline pinned apps get a clean A/B grade
-    # while code-level SAST / hardcoded secrets / known critical CVEs drive C/D/F grades.
-    if shutil.which("pip-audit"):
+    # 2. Optional live pip-audit network pass when REWIND_LIVE_PIP_AUDIT=1 is enabled.
+    if os.environ.get("REWIND_LIVE_PIP_AUDIT") == "1" and shutil.which("pip-audit"):
         try:
             proc = subprocess.run(
                 ["pip-audit", "-r", str(req_path), "-f", "json", "--progress-spinner", "off"],
