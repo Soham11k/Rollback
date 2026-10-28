@@ -22,11 +22,13 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from werkzeug.utils import secure_filename
 
 from aifix import AIFixer, ollama_reachable
+from compare import compare_releases, comparison_presets
 from deployer import publish_release, restore_version
 from diagnosis import LIMITS, diagnose_incident
 from github import GitHubPoller
 from rank import _version_key, annotate_releases, next_version, pick_best
 from registry import Registry
+from scanner import scan_release
 from verify import Verifier
 from watch import Watcher
 
@@ -161,11 +163,29 @@ def _busy_response(app_id: str):
     ), 409
 
 
+def _ensure_release_scans(app_id: str, releases: list[dict]) -> list[dict]:
+    for row in releases:
+        ver = str(row.get("version") or "")
+        if ver and row.get("security_grade") is None:
+            try:
+                scan = REGISTRY.read_scan(app_id, ver) or scan_release(REGISTRY, app_id, ver)
+                row["security_grade"] = scan.get("grade")
+                row["security_score"] = scan.get("score")
+                row["security_findings"] = (scan.get("counts") or {}).get("total", 0)
+                row["security_counts"] = scan.get("counts")
+            except Exception:  # noqa: BLE001
+                pass
+    return releases
+
+
 def _console_context(app_id: str) -> dict:
     record = _app_or_404(app_id)
-    releases = annotate_releases(
-        REGISTRY.list_releases(app_id),
-        record.get("live_version"),
+    releases = _ensure_release_scans(
+        app_id,
+        annotate_releases(
+            REGISTRY.list_releases(app_id),
+            record.get("live_version"),
+        ),
     )
     incident = REGISTRY.read_verify(app_id) or {}
     last_incident = REGISTRY.read_app_blob(app_id, "last_incident.json")
@@ -180,6 +200,23 @@ def _console_context(app_id: str) -> dict:
     )
     verifying = VERIFIER.progress(app_id)
     live_health = _live_health(record)
+    target_scan_ver = (
+        (last_incident.get("version") if last_incident and not _resolved_by(app_id, last_incident) else None)
+        or live
+        or (releases[0]["version"] if releases else None)
+    )
+    active_scan = None
+    if target_scan_ver:
+        active_scan = REGISTRY.read_scan(app_id, target_scan_ver)
+        if active_scan is None:
+            try:
+                active_scan = scan_release(REGISTRY, app_id, target_scan_ver)
+            except Exception:  # noqa: BLE001
+                active_scan = None
+    try:
+        comparison = compare_releases(REGISTRY, app_id)
+    except Exception:  # noqa: BLE001
+        comparison = {"app_id": app_id, "available": False, "presets": []}
     return {
         "app": record,
         "releases": releases,
@@ -198,6 +235,8 @@ def _console_context(app_id: str) -> dict:
         "suggested_version": _suggested_version(app_id),
         "resolved_by": _resolved_by(app_id, last_incident),
         "limits": LIMITS,
+        "scan": active_scan,
+        "compare": comparison,
     }
 
 
@@ -371,6 +410,11 @@ def api_publish(app_id: str):
 
     if not skip_verify:
         VERIFIER.verify_async(app_id, version)
+    else:
+        try:
+            scan_release(REGISTRY, app_id, version)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[publish] scan {app_id}@{version} skipped: {exc}", flush=True)
     return jsonify(
         {
             "status": "accepted",
@@ -468,6 +512,58 @@ def api_report(app_id: str):
     if not report:
         return jsonify({"status": "empty", "report": None})
     return jsonify({"status": "ok", "report": report})
+
+
+@app.get("/api/apps/<app_id>/scan")
+@app.get("/api/apps/<app_id>/scan/<version>")
+def api_get_scan(app_id: str, version: str | None = None):
+    record = _app_or_404(app_id)
+    target = (version or request.args.get("version") or record.get("live_version") or "").strip()
+    if not target:
+        releases = REGISTRY.list_releases(app_id)
+        if not releases:
+            return jsonify({"status": "empty", "scan": None})
+        target = str(releases[-1].get("version") or "")
+    if not REGISTRY.get_release(app_id, target):
+        return jsonify({"status": "not_found", "version": target, "message": f"Release not found: {target}"}), 404
+    refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+    scan = None if refresh else REGISTRY.read_scan(app_id, target)
+    if scan is None:
+        scan = scan_release(REGISTRY, app_id, target)
+    return jsonify({"status": "ok", "scan": scan})
+
+
+@app.post("/api/apps/<app_id>/scan/<version>")
+def api_run_scan(app_id: str, version: str):
+    _app_or_404(app_id)
+    if not REGISTRY.get_release(app_id, version):
+        return jsonify({"status": "not_found", "version": version, "message": f"Release not found: {version}"}), 404
+    scan = scan_release(REGISTRY, app_id, version)
+    return jsonify({"status": "ok", "scan": scan})
+
+
+@app.get("/api/apps/<app_id>/sbom/<version>")
+def api_get_sbom(app_id: str, version: str):
+    _app_or_404(app_id)
+    if not REGISTRY.get_release(app_id, version):
+        return jsonify({"status": "not_found", "version": version}), 404
+    sbom = REGISTRY.read_sbom(app_id, version)
+    if sbom is None:
+        scan_release(REGISTRY, app_id, version)
+        sbom = REGISTRY.read_sbom(app_id, version)
+    return jsonify({"status": "ok", "sbom": sbom})
+
+
+@app.get("/api/apps/<app_id>/compare")
+def api_compare(app_id: str):
+    _app_or_404(app_id)
+    before = (request.args.get("before") or "").strip() or None
+    after = (request.args.get("after") or "").strip() or None
+    try:
+        payload = compare_releases(REGISTRY, app_id, before, after)
+    except FileNotFoundError as exc:
+        return jsonify({"status": "not_found", "message": str(exc)}), 404
+    return jsonify({"status": "ok", **payload})
 
 
 @app.post("/api/apps/<app_id>/fix")

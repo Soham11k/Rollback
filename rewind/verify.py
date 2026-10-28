@@ -16,6 +16,7 @@ from locate import build_report
 from model import load_model, save_model, score_sample, train_model
 from rank import headroom_score, pick_best
 from registry import Registry
+from scanner import scan_release
 from watch import Watcher
 
 
@@ -293,6 +294,14 @@ class Verifier:
             "deployed",
             f"{version} is live. Verifying for {self.window_seconds} s with {mode_label}.",
         )
+        try:
+            scan = scan_release(self.registry, app_id, version)
+            recording.event(
+                "scan_completed",
+                f"DevSecOps scan: grade {scan['grade']} ({scan['counts']['total']} finding(s)).",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[verify] scan {app_id}@{version} skipped: {exc}", flush=True)
 
         # Let the watcher collect a few samples of the new release first.
         time.sleep(self.warmup_seconds)

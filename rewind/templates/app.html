@@ -154,13 +154,14 @@
 
 <section class="panel releases-panel" data-releases data-app="{{ app.id }}">
   <h2>Published releases</h2>
-  <p class="note">Scores are headroom against the verify limits. BEST is what RewindAI restores on anomaly.</p>
+  <p class="note">Scores are headroom against the verify limits. Security grades come from Bandit SAST, pip-audit CVEs, Trivy image + SBOM, and Dockerfile hardening.</p>
   {% if releases %}
   <table class="releases-table">
     <thead>
       <tr>
         <th>Version</th>
         <th>Score</th>
+        <th>Security</th>
         <th>Badges</th>
         <th></th>
       </tr>
@@ -184,6 +185,14 @@
           </div>
         </td>
         <td class="mono">{% if row.score is not none %}{{ row.score }}{% else %}—{% endif %}</td>
+        <td>
+          {% if row.security_grade %}
+          <span class="grade-pill grade-{{ row.security_grade|lower }}">{{ row.security_grade }}</span>
+          <span class="mono muted">{{ row.security_findings or 0 }} finding{% if (row.security_findings or 0) != 1 %}s{% endif %}</span>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
         <td>
           <div class="badges">
             {% if row.live %}<span class="badge live">Live</span>{% endif %}
@@ -211,6 +220,267 @@
   <p class="empty">No releases yet. Publish with <code>./scripts/rewind.sh publish</code> or connect GitHub below.</p>
   {% endif %}
 </section>
+
+<section class="panel inspector-panel" data-inspector data-app="{{ app.id }}" data-before="{{ compare.before.version if compare and compare.available else '' }}" data-after="{{ compare.after.version if compare and compare.available else '' }}">
+  <div class="inspector-head">
+    <div>
+      <h2>Before vs After — What Changed</h2>
+      <p class="note">Compare any two releases side by side across runtime peaks, route p95/errors, AST functions, code diff, and DevSecOps security findings.</p>
+    </div>
+    {% if releases|length >= 2 %}
+    <div class="inspector-controls">
+      <label class="mono">Before
+        <select class="mono" data-compare-before aria-label="Before version">
+          {% for row in releases|reverse %}
+          <option value="{{ row.version }}" {% if compare and compare.available and compare.before.version == row.version %}selected{% endif %}>{{ row.version }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="button" class="btn btn-sm" data-compare-swap title="Swap Before and After">⇄ Swap</button>
+      <label class="mono">After
+        <select class="mono" data-compare-after aria-label="After version">
+          {% for row in releases|reverse %}
+          <option value="{{ row.version }}" {% if compare and compare.available and compare.after.version == row.version %}selected{% endif %}>{{ row.version }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    {% endif %}
+  </div>
+  {% if compare and compare.presets %}
+  <div class="preset-bar" data-compare-presets>
+    {% for p in compare.presets %}
+    <button type="button" class="preset-btn {% if compare.before.version == p.before and compare.after.version == p.after %}active{% endif %}" data-preset-before="{{ p.before }}" data-preset-after="{{ p.after }}">{{ p.label }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <div data-compare-body>
+    {% if compare and compare.available %}
+    <div class="delta-strip">
+      <article class="delta-card">
+        <span class="label">Headroom score</span>
+        <strong class="mono">{{ compare.before.score if compare.before.score is not none else '—' }} → {{ compare.after.score if compare.after.score is not none else '—' }}</strong>
+        <span class="delta-tag {% if compare.score_delta is not none and compare.score_delta < 0 %}bad{% elif compare.score_delta is not none and compare.score_delta > 0 %}good{% endif %}">
+          {% if compare.score_delta is not none %}{{ '%+.1f'|format(compare.score_delta) }} pts{% else %}unverified{% endif %}
+        </span>
+      </article>
+      {% for sig in compare.signals %}
+      {% if sig.signal in ['cpu', 'latency_p95', 'error_rate'] %}
+      <article class="delta-card {% if sig.status in ['crossed', 'still_crossed'] %}card-alarm{% elif sig.status == 'recovered' %}card-good{% endif %}">
+        <span class="label">{{ sig.label }}</span>
+        <strong class="mono">{{ '{:,.1f}'.format(sig.before) }}{{ sig.unit }} → {{ '{:,.1f}'.format(sig.after) }}{{ sig.unit }}</strong>
+        <span class="delta-tag {% if sig.status in ['crossed', 'still_crossed', 'regressed'] %}bad{% elif sig.status in ['recovered', 'improved'] %}good{% endif %}">
+          {{ '%+.1f'|format(sig.delta) }}{{ sig.unit }} · {{ sig.status|replace('_', ' ') }}
+        </span>
+      </article>
+      {% endif %}
+      {% endfor %}
+      <article class="delta-card {% if compare.security.introduced|length > 0 %}card-alarm{% elif compare.security.fixed|length > 0 %}card-good{% endif %}">
+        <span class="label">Security grade</span>
+        <strong class="mono">{{ compare.security.before_grade }} ({{ compare.security.before_counts.total or 0 }}) → {{ compare.security.after_grade }} ({{ compare.security.after_counts.total or 0 }})</strong>
+        <span class="delta-tag {% if compare.security.introduced|length > 0 %}bad{% elif compare.security.fixed|length > 0 %}good{% endif %}">
+          +{{ compare.security.introduced|length }} new · -{{ compare.security.fixed|length }} fixed
+        </span>
+      </article>
+    </div>
+
+    {% if compare.routes %}
+    <h3 class="sub-head">Per-route latency &amp; error delta</h3>
+    <table class="releases-table route-delta-table">
+      <thead>
+        <tr>
+          <th>Probe route</th>
+          <th>p95 Before → After</th>
+          <th>Error % Before → After</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in compare.routes %}
+        <tr>
+          <td class="mono">{{ r.path }}</td>
+          <td class="mono">{{ '{:,.1f}'.format(r.before_p95_ms) }} ms → {{ '{:,.1f}'.format(r.after_p95_ms) }} ms ({{ '%+.1f'|format(r.delta_p95_ms) }} ms)</td>
+          <td class="mono {% if r.after_error_pct > limits.error_rate %}alarm-text{% endif %}">{{ r.before_error_pct }}% → {{ r.after_error_pct }}% ({{ '%+.1f'|format(r.delta_error_pct) }}%)</td>
+          <td><span class="delta-tag {% if r.status in ['crossed', 'still_crossed', 'regressed'] %}bad{% elif r.status in ['recovered', 'improved'] %}good{% endif %}">{{ r.status|replace('_', ' ') }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <h3 class="sub-head">DevSecOps &amp; supply-chain delta</h3>
+    <div class="sec-delta-grid">
+      <div class="sec-col">
+        <h4>Introduced in {{ compare.after.version }} ({{ compare.security.introduced|length }})</h4>
+        {% if compare.security.introduced %}
+        <ul class="finding-list">
+          {% for f in compare.security.introduced %}
+          <li class="finding-item sev-{{ f.severity }}">
+            <div class="finding-top">
+              <span class="sev-pill sev-{{ f.severity }}">{{ f.severity }}</span>
+              <span class="mono">{{ f.tool }} · {{ f.rule_id }} · {{ f.cwe }}</span>
+              <span class="mono muted">{{ f.file }}:{{ f.line }}</span>
+            </div>
+            <strong>{{ f.title }}</strong>
+            <p class="note">{{ f.message }}</p>
+            {% if f.code %}<code class="suspect-code mono">{{ f.code }}</code>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="note">No new security findings introduced in {{ compare.after.version }}.</p>
+        {% endif %}
+      </div>
+      <div class="sec-col">
+        <h4>Fixed in {{ compare.after.version }} ({{ compare.security.fixed|length }})</h4>
+        {% if compare.security.fixed %}
+        <ul class="finding-list">
+          {% for f in compare.security.fixed %}
+          <li class="finding-item fixed-item">
+            <div class="finding-top">
+              <span class="sev-pill fixed">FIXED</span>
+              <span class="mono">{{ f.tool }} · {{ f.rule_id }} · {{ f.cwe }}</span>
+              <span class="mono muted">{{ f.file }}:{{ f.line }}</span>
+            </div>
+            <strong>{{ f.title }}</strong>
+            <p class="note">{{ f.remediation }}</p>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="note">No prior findings removed between {{ compare.before.version }} and {{ compare.after.version }}.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="code-diff-header">
+      <h3 class="sub-head">AST symbols &amp; code diff ({{ compare.before.version }} → {{ compare.after.version }})</h3>
+      <div class="chart-modes" data-diff-modes role="group" aria-label="Diff view mode">
+        <button type="button" class="mode active" data-diff-mode="split">Side-by-side</button>
+        <button type="button" class="mode" data-diff-mode="unified">Unified</button>
+      </div>
+    </div>
+    <div class="ast-badges">
+      {% for fn in compare.ast_changes.added %}
+      <span class="ast-pill ast-added">+ {{ fn.file }} :: {{ fn.name }} ({{ fn.kind }}, {{ fn.line_count }}L)</span>
+      {% endfor %}
+      {% for fn in compare.ast_changes.modified %}
+      <span class="ast-pill ast-modified">~ {{ fn.file }} :: {{ fn.name }} (+{{ fn.added_lines }}/-{{ fn.removed_lines }}L)</span>
+      {% endfor %}
+      {% for fn in compare.ast_changes.removed %}
+      <span class="ast-pill ast-removed">- {{ fn.file }} :: {{ fn.name }} ({{ fn.kind }}, {{ fn.line_count }}L)</span>
+      {% endfor %}
+      {% if not compare.ast_changes.added and not compare.ast_changes.modified and not compare.ast_changes.removed %}
+      <span class="muted">No Python AST symbol changes between these releases.</span>
+      {% endif %}
+    </div>
+
+    {% if compare.files %}
+    <div data-diff-split>
+      {% for f in compare.files %}
+      <div class="diff-file-block">
+        <div class="diff-file-bar mono">
+          <span>{{ f.file }} ({{ f.status }})</span>
+          <span>+{{ f.added_lines }} / -{{ f.removed_lines }}</span>
+        </div>
+        <div class="sbs-wrap">
+          <table class="sbs-table mono">
+            <thead>
+              <tr>
+                <th class="ln-col">#</th>
+                <th>Before ({{ compare.before.version }})</th>
+                <th class="ln-col">#</th>
+                <th>After ({{ compare.after.version }})</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in f.side_by_side %}
+              <tr class="sbs-{{ row.type }}">
+                <td class="ln-col">{{ row.left_line or '' }}</td>
+                <td class="code-cell">{{ row.left_text }}</td>
+                <td class="ln-col">{{ row.right_line or '' }}</td>
+                <td class="code-cell">{{ row.right_text }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div data-diff-unified hidden>
+      {% for f in compare.files %}
+      <pre class="fix-diff mono">{{ f.unified }}</pre>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="note">No source file differences between {{ compare.before.version }} and {{ compare.after.version }}.</p>
+    {% endif %}
+    {% else %}
+    <p class="empty">Publish at least two versions (for example <code>1.0.0</code> and <code>2.0.0</code>) to inspect Before vs After deltas.</p>
+    {% endif %}
+  </div>
+</section>
+
+{% if scan %}
+<section class="panel scanner-panel" data-scanner data-app="{{ app.id }}">
+  <div class="inspector-head">
+    <div>
+      <h2>DevSecOps Release Scanner &amp; SBOM</h2>
+      <p class="note">Automated static analysis (Bandit), dependency CVE audit (pip-audit), container image + CycloneDX SBOM inspection (Trivy), and Dockerfile hardening.</p>
+    </div>
+    <div class="inspector-controls">
+      <label class="mono">Release
+        <select class="mono" data-scan-version aria-label="Release to scan">
+          {% for row in releases %}
+          <option value="{{ row.version }}" {% if scan.version == row.version %}selected{% endif %}>{{ row.version }} (Grade {{ row.security_grade or '—' }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="button" class="btn btn-sm" data-rescan>Rescan</button>
+    </div>
+  </div>
+  <div data-scan-body>
+    <div class="scanner-summary-bar">
+      <div class="grade-box grade-{{ scan.grade|lower }}">
+        <span class="label">Security grade</span>
+        <strong>{{ scan.grade }}</strong>
+        <span class="mono">{{ scan.score }}/100</span>
+      </div>
+      {% for key, tool in scan.by_tool.items() %}
+      <div class="tool-box">
+        <span class="label">{{ tool.label }}</span>
+        <strong class="mono">{{ tool.count }} finding{% if tool.count != 1 %}s{% endif %}</strong>
+        <span class="muted mono">status: {{ tool.status }}</span>
+      </div>
+      {% endfor %}
+      <div class="tool-box">
+        <span class="label">CycloneDX SBOM &amp; image</span>
+        <strong class="mono">{{ scan.sbom_summary.package_count }} pkgs · {{ scan.image.size_mb }} MB</strong>
+        <span class="muted mono">base: {{ scan.image.base_image or 'n/a' }} · user: {{ scan.image.user }}</span>
+      </div>
+    </div>
+    {% if scan.findings %}
+    <ul class="finding-list">
+      {% for f in scan.findings %}
+      <li class="finding-item sev-{{ f.severity }}">
+        <div class="finding-top">
+          <span class="sev-pill sev-{{ f.severity }}">{{ f.severity }}</span>
+          <span class="mono">{{ f.tool }} · {{ f.rule_id }} · {{ f.cwe }}</span>
+          <span class="mono muted">{{ f.file }}:{{ f.line }}</span>
+        </div>
+        <strong>{{ f.title }}</strong>
+        <p class="note">{{ f.message }} — <em>{{ f.remediation }}</em></p>
+        {% if f.code %}<code class="suspect-code mono">{{ f.code }}</code>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">Zero findings across Bandit SAST, pip-audit, Trivy, and Dockerfile checks.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 
 <section class="numeral-grid">
   <article class="numeral">

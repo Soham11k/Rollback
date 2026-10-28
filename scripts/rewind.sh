@@ -18,6 +18,8 @@ Usage:
   rewind.sh pick ID VERSION [--force]
   rewind.sh fix ID [--no-wait]
   rewind.sh ship ID [--version V] [--wait]
+  rewind.sh scan ID [VERSION] [--refresh]
+  rewind.sh diff ID [BEFORE] [AFTER]
   rewind.sh connect-github ID --repo OWNER/NAME [--branch release] [--path app]
   rewind.sh disconnect-github ID
 EOF
@@ -73,10 +75,11 @@ def release_line(row):
     if row.get("quarantined"):
         flags.append("QUARANTINED")
     score = "-" if row.get("score") is None else str(row.get("score"))
+    sec = f"sec {row['security_grade']}({row.get('security_findings', 0)})" if row.get("security_grade") else ""
     decision = row.get("decision") or row.get("status") or "-"
     commit = (row.get("commit") or {}).get("sha", "")[:7]
     tail = f"  commit {commit}" if commit else ""
-    return f"    {row.get('version', '?'):<16} score {score:<5} {decision:<10} {' '.join(flags)}{tail}"
+    return f"    {row.get('version', '?'):<16} score {score:<5} {sec:<11} {decision:<10} {' '.join(flags)}{tail}"
 
 
 if mode == "message":
@@ -172,6 +175,75 @@ elif mode == "fix":
     if data.get("diff"):
         print("\nDiff")
         print(data["diff"].rstrip())
+elif mode == "scan":
+    scan = data.get("scan") or data
+    counts = scan.get("counts") or {}
+    img = scan.get("image") or {}
+    sbom = scan.get("sbom_summary") or {}
+    print(
+        f"DevSecOps Scan · {scan.get('app_id')}@{scan.get('version')}"
+        f"  Grade {scan.get('grade')} ({scan.get('score')}/100)"
+        f"  total {counts.get('total', 0)} (crit {counts.get('critical', 0)},"
+        f" high {counts.get('high', 0)}, med {counts.get('medium', 0)}, low {counts.get('low', 0)})"
+    )
+    for k, tool in (scan.get("by_tool") or {}).items():
+        print(f"  {tool.get('label', k):<22} {tool.get('count', 0)} finding(s)  [{tool.get('status')}]")
+    print(
+        f"  SBOM ({sbom.get('format', 'CycloneDX')})       {sbom.get('package_count', 0)} packages"
+        f"  image {img.get('size_mb', 0)} MB  base {img.get('base_image') or 'n/a'}  user {img.get('user') or 'root'}"
+    )
+    findings = scan.get("findings") or []
+    if findings:
+        print("\nFindings:")
+        for f in findings:
+            print(f"  [{f.get('severity', '').upper():<8}] {f.get('tool')}/{f.get('rule_id')} ({f.get('cwe')}) {f.get('file')}:{f.get('line')} — {f.get('title')}")
+elif mode == "compare":
+    if not data.get("available"):
+        print(data.get("message") or "Comparison unavailable.")
+        raise SystemExit(0)
+    b, a = data["before"], data["after"]
+    sec = data.get("security") or {}
+    print(
+        f"Before vs After · {data.get('app_id')}  {b['version']} ({b['decision']}, score {b.get('score')}, sec {b.get('security_grade')})"
+        f"  ->  {a['version']} ({a['decision']}, score {a.get('score')}, sec {a.get('security_grade')})"
+    )
+    print("\nRuntime signal deltas:")
+    for sig in data.get("signals") or []:
+        print(
+            f"  {sig['label']:<20} {sig['before']:>7.1f}{sig['unit']} -> {sig['after']:>7.1f}{sig['unit']}"
+            f"  ({sig['delta']:+.1f}{sig['unit']})  [{sig['status']}]"
+        )
+    routes = data.get("routes") or []
+    if routes:
+        print("\nPer-route deltas:")
+        for r in routes:
+            print(
+                f"  {r['path']:<40} p95 {r['before_p95_ms']:.1f} -> {r['after_p95_ms']:.1f} ms ({r['delta_p95_ms']:+.1f} ms)"
+                f"  err {r['before_error_pct']:.1f}% -> {r['after_error_pct']:.1f}%  [{r['status']}]"
+            )
+    ast_c = data.get("ast_changes") or {}
+    print(
+        f"\nAST changes: +{len(ast_c.get('added') or [])} added,"
+        f" ~{len(ast_c.get('modified') or [])} modified,"
+        f" -{len(ast_c.get('removed') or [])} removed"
+    )
+    for fn in ast_c.get("added") or []:
+        print(f"  + {fn['file']} :: {fn['name']} ({fn['kind']}, {fn['line_count']}L)")
+    for fn in ast_c.get("modified") or []:
+        print(f"  ~ {fn['file']} :: {fn['name']} (+{fn['added_lines']}/-{fn['removed_lines']}L)")
+    for fn in ast_c.get("removed") or []:
+        print(f"  - {fn['file']} :: {fn['name']} ({fn['kind']}, {fn['line_count']}L)")
+    print(
+        f"\nSecurity delta: grade {sec.get('before_grade')} -> {sec.get('after_grade')}"
+        f"  (+{len(sec.get('introduced') or [])} introduced, -{len(sec.get('fixed') or [])} fixed)"
+    )
+    for f in sec.get("introduced") or []:
+        print(f"  + NEW   [{f['severity'].upper()}] {f['rule_id']} {f['file']}:{f['line']} {f['title']}")
+    for f in sec.get("fixed") or []:
+        print(f"  - FIXED [{f['severity'].upper()}] {f['rule_id']} {f['file']}:{f['line']} {f['title']}")
+    for f in data.get("files") or []:
+        if f.get("unified"):
+            print(f"\n{f['unified'].rstrip()}")
 else:
     raise SystemExit(f"unknown format mode {mode}")
 PY
@@ -501,6 +573,38 @@ cmd_disconnect_github() {
   fmt message
 }
 
+cmd_scan() {
+  local app_id="${1:-}"
+  shift || true
+  local version="" refresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --refresh) refresh=1; shift ;;
+      *) version="$1"; shift ;;
+    esac
+  done
+  [[ -n "${app_id}" ]] || { echo "Usage: rewind.sh scan ID [VERSION] [--refresh]" >&2; exit 1; }
+  if [[ -n "${version}" && "${refresh}" == "1" ]]; then
+    request POST "/api/apps/${app_id}/scan/${version}"
+  elif [[ -n "${version}" ]]; then
+    request GET "/api/apps/${app_id}/scan/${version}"
+  else
+    request GET "/api/apps/${app_id}/scan"
+  fi
+  check
+  fmt scan
+}
+
+cmd_diff() {
+  local app_id="${1:-}"
+  local before="${2:-}"
+  local after="${3:-}"
+  [[ -n "${app_id}" ]] || { echo "Usage: rewind.sh diff ID [BEFORE] [AFTER]" >&2; exit 1; }
+  request GET "/api/apps/${app_id}/compare?before=${before}&after=${after}"
+  check
+  fmt compare
+}
+
 main() {
   local cmd="${1:-}"
   shift || true
@@ -512,6 +616,8 @@ main() {
     pick) cmd_pick "$@" ;;
     fix) cmd_fix "$@" ;;
     ship) cmd_ship "$@" ;;
+    scan) cmd_scan "$@" ;;
+    diff|compare) cmd_diff "$@" ;;
     connect-github) cmd_connect_github "$@" ;;
     disconnect-github) cmd_disconnect_github "$@" ;;
     -h|--help|help|"") usage ;;

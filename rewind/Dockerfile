@@ -1,13 +1,16 @@
+FROM aquasec/trivy:0.58.1 AS trivy-bin
 FROM python:3.11-slim
 
 WORKDIR /rewind
+
+COPY --from=trivy-bin /usr/local/bin/trivy /usr/local/bin/trivy
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash curl ca-certificates \
     && curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz" \
       | tar -xz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
-    && chmod +x /usr/local/bin/docker \
+    && chmod +x /usr/local/bin/docker /usr/local/bin/trivy \
     && rm -rf /tmp/docker /var/lib/apt/lists/*
 
 COPY requirements.txt .

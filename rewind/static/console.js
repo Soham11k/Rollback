@@ -715,4 +715,314 @@
   fetchSeries();
   setInterval(fetchSeries, 5000);
   refreshRecordings();
+
+  // —— Before vs After Inspector & DevSecOps Scanner ——
+
+  function esc(str) {
+    return String(str === null || str === undefined ? "" : str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function snum(val, digits) {
+    var n = Number(val) || 0;
+    var sign = n > 0 ? "+" : "";
+    return sign + n.toFixed(digits === undefined ? 1 : digits);
+  }
+
+  var inspector = document.querySelector("[data-inspector]");
+  var compareBeforeSel = inspector ? inspector.querySelector("[data-compare-before]") : null;
+  var compareAfterSel = inspector ? inspector.querySelector("[data-compare-after]") : null;
+  var compareSwapBtn = inspector ? inspector.querySelector("[data-compare-swap]") : null;
+  var compareBody = inspector ? inspector.querySelector("[data-compare-body]") : null;
+  var diffViewMode = "split";
+
+  function bindDiffModes() {
+    if (!inspector) return;
+    inspector.querySelectorAll("[data-diff-mode]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        diffViewMode = btn.getAttribute("data-diff-mode") || "split";
+        inspector.querySelectorAll("[data-diff-mode]").forEach(function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+        var splitEl = inspector.querySelector("[data-diff-split]");
+        var uniEl = inspector.querySelector("[data-diff-unified]");
+        if (splitEl && uniEl) {
+          if (diffViewMode === "unified") {
+            splitEl.setAttribute("hidden", "");
+            uniEl.removeAttribute("hidden");
+          } else {
+            uniEl.setAttribute("hidden", "");
+            splitEl.removeAttribute("hidden");
+          }
+        }
+      });
+    });
+  }
+  bindDiffModes();
+
+  function renderFindingItem(f, isFixed) {
+    var pill = isFixed
+      ? '<span class="sev-pill fixed">FIXED</span>'
+      : '<span class="sev-pill sev-' + esc(f.severity) + '">' + esc(f.severity) + "</span>";
+    var cls = isFixed ? "finding-item fixed-item" : "finding-item sev-" + esc(f.severity);
+    var detail = isFixed ? esc(f.remediation || f.message) : esc(f.message);
+    var code = !isFixed && f.code ? '<code class="suspect-code mono">' + esc(f.code) + "</code>" : "";
+    return (
+      '<li class="' + cls + '">' +
+      '<div class="finding-top">' +
+      pill +
+      '<span class="mono">' + esc(f.tool) + " · " + esc(f.rule_id) + " · " + esc(f.cwe) + "</span>" +
+      '<span class="mono muted">' + esc(f.file) + ":" + esc(f.line) + "</span>" +
+      "</div>" +
+      "<strong>" + esc(f.title) + "</strong>" +
+      '<p class="note">' + detail + "</p>" +
+      code +
+      "</li>"
+    );
+  }
+
+  function renderCompare(c) {
+    if (!compareBody || !c || !c.available) return;
+    var scoreB = c.before.score !== null && c.before.score !== undefined ? c.before.score : "—";
+    var scoreA = c.after.score !== null && c.after.score !== undefined ? c.after.score : "—";
+    var scoreCls = c.score_delta !== null ? (c.score_delta < 0 ? "bad" : (c.score_delta > 0 ? "good" : "")) : "";
+    var scoreTag = c.score_delta !== null ? snum(c.score_delta, 1) + " pts" : "unverified";
+
+    var cardsHtml =
+      '<article class="delta-card">' +
+      '<span class="label">Headroom score</span>' +
+      '<strong class="mono">' + esc(scoreB) + " → " + esc(scoreA) + "</strong>" +
+      '<span class="delta-tag ' + scoreCls + '">' + esc(scoreTag) + "</span>" +
+      "</article>";
+
+    (c.signals || []).forEach(function (sig) {
+      if (["cpu", "latency_p95", "error_rate"].indexOf(sig.signal) < 0) return;
+      var cardCls = sig.status === "crossed" || sig.status === "still_crossed" ? "card-alarm" : (sig.status === "recovered" ? "card-good" : "");
+      var tagCls = ["crossed", "still_crossed", "regressed"].indexOf(sig.status) >= 0 ? "bad" : (["recovered", "improved"].indexOf(sig.status) >= 0 ? "good" : "");
+      cardsHtml +=
+        '<article class="delta-card ' + cardCls + '">' +
+        '<span class="label">' + esc(sig.label) + "</span>" +
+        '<strong class="mono">' + num(sig.before, 1) + esc(sig.unit) + " → " + num(sig.after, 1) + esc(sig.unit) + "</strong>" +
+        '<span class="delta-tag ' + tagCls + '">' + snum(sig.delta, 1) + esc(sig.unit) + " · " + esc(sig.status.replace(/_/g, " ")) + "</span>" +
+        "</article>";
+    });
+
+    var sec = c.security || {};
+    var intro = sec.introduced || [];
+    var fixed = sec.fixed || [];
+    var secCardCls = intro.length > 0 ? "card-alarm" : (fixed.length > 0 ? "card-good" : "");
+    var secTagCls = intro.length > 0 ? "bad" : (fixed.length > 0 ? "good" : "");
+    cardsHtml +=
+      '<article class="delta-card ' + secCardCls + '">' +
+      '<span class="label">Security grade</span>' +
+      '<strong class="mono">' + esc(sec.before_grade) + " (" + ((sec.before_counts && sec.before_counts.total) || 0) + ") → " + esc(sec.after_grade) + " (" + ((sec.after_counts && sec.after_counts.total) || 0) + ")</strong>" +
+      '<span class="delta-tag ' + secTagCls + '">+' + intro.length + " new · -" + fixed.length + " fixed</span>" +
+      "</article>";
+
+    var routesHtml = "";
+    if (c.routes && c.routes.length) {
+      routesHtml =
+        '<h3 class="sub-head">Per-route latency &amp; error delta</h3>' +
+        '<table class="releases-table route-delta-table"><thead><tr><th>Probe route</th><th>p95 Before → After</th><th>Error % Before → After</th><th>Status</th></tr></thead><tbody>' +
+        c.routes.map(function (r) {
+          var tCls = ["crossed", "still_crossed", "regressed"].indexOf(r.status) >= 0 ? "bad" : (["recovered", "improved"].indexOf(r.status) >= 0 ? "good" : "");
+          return (
+            "<tr>" +
+            '<td class="mono">' + esc(r.path) + "</td>" +
+            '<td class="mono">' + num(r.before_p95_ms, 1) + " ms → " + num(r.after_p95_ms, 1) + " ms (" + snum(r.delta_p95_ms, 1) + " ms)</td>" +
+            '<td class="mono">' + num(r.before_error_pct, 1) + "% → " + num(r.after_error_pct, 1) + "% (" + snum(r.delta_error_pct, 1) + "%)</td>" +
+            '<td><span class="delta-tag ' + tCls + '">' + esc(r.status.replace(/_/g, " ")) + "</span></td>" +
+            "</tr>"
+          );
+        }).join("") +
+        "</tbody></table>";
+    }
+
+    var introHtml = intro.length
+      ? '<ul class="finding-list">' + intro.map(function (f) { return renderFindingItem(f, false); }).join("") + "</ul>"
+      : '<p class="note">No new security findings introduced in ' + esc(c.after.version) + ".</p>";
+    var fixedHtml = fixed.length
+      ? '<ul class="finding-list">' + fixed.map(function (f) { return renderFindingItem(f, true); }).join("") + "</ul>"
+      : '<p class="note">No prior findings removed between ' + esc(c.before.version) + " and " + esc(c.after.version) + ".</p>";
+
+    var ast = c.ast_changes || { added: [], modified: [], removed: [] };
+    var astPills = [];
+    (ast.added || []).forEach(function (fn) {
+      astPills.push('<span class="ast-pill ast-added">+ ' + esc(fn.file) + " :: " + esc(fn.name) + " (" + esc(fn.kind) + ", " + fn.line_count + "L)</span>");
+    });
+    (ast.modified || []).forEach(function (fn) {
+      astPills.push('<span class="ast-pill ast-modified">~ ' + esc(fn.file) + " :: " + esc(fn.name) + " (+" + fn.added_lines + "/-" + fn.removed_lines + "L)</span>");
+    });
+    (ast.removed || []).forEach(function (fn) {
+      astPills.push('<span class="ast-pill ast-removed">- ' + esc(fn.file) + " :: " + esc(fn.name) + " (" + esc(fn.kind) + ", " + fn.line_count + "L)</span>");
+    });
+    var astHtml = astPills.length ? astPills.join("") : '<span class="muted">No Python AST symbol changes between these releases.</span>';
+
+    var filesHtml = "";
+    if (c.files && c.files.length) {
+      var splitBlocks = c.files.map(function (f) {
+        var rows = (f.side_by_side || []).map(function (r) {
+          return (
+            '<tr class="sbs-' + esc(r.type) + '">' +
+            '<td class="ln-col">' + (r.left_line || "") + "</td>" +
+            '<td class="code-cell">' + esc(r.left_text) + "</td>" +
+            '<td class="ln-col">' + (r.right_line || "") + "</td>" +
+            '<td class="code-cell">' + esc(r.right_text) + "</td>" +
+            "</tr>"
+          );
+        }).join("");
+        return (
+          '<div class="diff-file-block">' +
+          '<div class="diff-file-bar mono"><span>' + esc(f.file) + " (" + esc(f.status) + ")</span><span>+" + f.added_lines + " / -" + f.removed_lines + "</span></div>" +
+          '<div class="sbs-wrap"><table class="sbs-table mono"><thead><tr><th class="ln-col">#</th><th>Before (' + esc(c.before.version) + ')</th><th class="ln-col">#</th><th>After (' + esc(c.after.version) + ")</th></tr></thead><tbody>" +
+          rows +
+          "</tbody></table></div></div>"
+        );
+      }).join("");
+      var uniBlocks = c.files.map(function (f) {
+        return '<pre class="fix-diff mono">' + esc(f.unified) + "</pre>";
+      }).join("");
+      filesHtml =
+        '<div data-diff-split ' + (diffViewMode === "unified" ? "hidden" : "") + ">" + splitBlocks + "</div>" +
+        '<div data-diff-unified ' + (diffViewMode === "split" ? "hidden" : "") + ">" + uniBlocks + "</div>";
+    } else {
+      filesHtml = '<p class="note">No source file differences between ' + esc(c.before.version) + " and " + esc(c.after.version) + ".</p>";
+    }
+
+    compareBody.innerHTML =
+      '<div class="delta-strip">' + cardsHtml + "</div>" +
+      routesHtml +
+      '<h3 class="sub-head">DevSecOps &amp; supply-chain delta</h3>' +
+      '<div class="sec-delta-grid">' +
+      '<div class="sec-col"><h4>Introduced in ' + esc(c.after.version) + " (" + intro.length + ")</h4>" + introHtml + "</div>" +
+      '<div class="sec-col"><h4>Fixed in ' + esc(c.after.version) + " (" + fixed.length + ")</h4>" + fixedHtml + "</div>" +
+      "</div>" +
+      '<div class="code-diff-header">' +
+      '<h3 class="sub-head">AST symbols &amp; code diff (' + esc(c.before.version) + " → " + esc(c.after.version) + ")</h3>" +
+      '<div class="chart-modes" data-diff-modes role="group" aria-label="Diff view mode">' +
+      '<button type="button" class="mode ' + (diffViewMode === "split" ? "active" : "") + '" data-diff-mode="split">Side-by-side</button>' +
+      '<button type="button" class="mode ' + (diffViewMode === "unified" ? "active" : "") + '" data-diff-mode="unified">Unified</button>' +
+      "</div></div>" +
+      '<div class="ast-badges">' + astHtml + "</div>" +
+      filesHtml;
+
+    bindDiffModes();
+    if (inspector) {
+      inspector.querySelectorAll("[data-preset-before]").forEach(function (btn) {
+        var match = btn.getAttribute("data-preset-before") === c.before.version && btn.getAttribute("data-preset-after") === c.after.version;
+        btn.classList.toggle("active", match);
+      });
+    }
+  }
+
+  function fetchComparison(beforeVer, afterVer) {
+    if (!beforeVer || !afterVer) return;
+    if (compareBeforeSel) compareBeforeSel.value = beforeVer;
+    if (compareAfterSel) compareAfterSel.value = afterVer;
+    getJSON(api + "/compare?before=" + encodeURIComponent(beforeVer) + "&after=" + encodeURIComponent(afterVer))
+      .then(function (data) {
+        if (data && data.available) renderCompare(data);
+      })
+      .catch(function () {});
+  }
+
+  if (compareBeforeSel && compareAfterSel) {
+    compareBeforeSel.addEventListener("change", function () {
+      fetchComparison(compareBeforeSel.value, compareAfterSel.value);
+    });
+    compareAfterSel.addEventListener("change", function () {
+      fetchComparison(compareBeforeSel.value, compareAfterSel.value);
+    });
+  }
+  if (compareSwapBtn && compareBeforeSel && compareAfterSel) {
+    compareSwapBtn.addEventListener("click", function () {
+      var b = compareBeforeSel.value;
+      var a = compareAfterSel.value;
+      fetchComparison(a, b);
+    });
+  }
+  if (inspector) {
+    inspector.querySelectorAll("[data-preset-before]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        fetchComparison(btn.getAttribute("data-preset-before"), btn.getAttribute("data-preset-after"));
+      });
+    });
+  }
+
+  // —— DevSecOps Scanner selector ——
+  var scannerPanel = document.querySelector("[data-scanner]");
+  var scanSelect = scannerPanel ? scannerPanel.querySelector("[data-scan-version]") : null;
+  var rescanBtn = scannerPanel ? scannerPanel.querySelector("[data-rescan]") : null;
+  var scanBody = scannerPanel ? scannerPanel.querySelector("[data-scan-body]") : null;
+
+  function renderScan(scan) {
+    if (!scanBody || !scan) return;
+    var toolsHtml = Object.keys(scan.by_tool || {}).map(function (k) {
+      var t = scan.by_tool[k];
+      return (
+        '<div class="tool-box">' +
+        '<span class="label">' + esc(t.label) + "</span>" +
+        '<strong class="mono">' + t.count + " finding" + (t.count === 1 ? "" : "s") + "</strong>" +
+        '<span class="muted mono">status: ' + esc(t.status) + "</span>" +
+        "</div>"
+      );
+    }).join("");
+    var sbom = scan.sbom_summary || { package_count: 0 };
+    var img = scan.image || { size_mb: 0, base_image: "n/a", user: "root" };
+    var findingsHtml = (scan.findings && scan.findings.length)
+      ? '<ul class="finding-list">' + scan.findings.map(function (f) {
+          return (
+            '<li class="finding-item sev-' + esc(f.severity) + '">' +
+            '<div class="finding-top">' +
+            '<span class="sev-pill sev-' + esc(f.severity) + '">' + esc(f.severity) + "</span>" +
+            '<span class="mono">' + esc(f.tool) + " · " + esc(f.rule_id) + " · " + esc(f.cwe) + "</span>" +
+            '<span class="mono muted">' + esc(f.file) + ":" + esc(f.line) + "</span>" +
+            "</div>" +
+            "<strong>" + esc(f.title) + "</strong>" +
+            '<p class="note">' + esc(f.message) + " — <em>" + esc(f.remediation) + "</em></p>" +
+            (f.code ? '<code class="suspect-code mono">' + esc(f.code) + "</code>" : "") +
+            "</li>"
+          );
+        }).join("") + "</ul>"
+      : '<p class="empty">Zero findings across Bandit SAST, pip-audit, Trivy, and Dockerfile checks.</p>';
+
+    scanBody.innerHTML =
+      '<div class="scanner-summary-bar">' +
+      '<div class="grade-box grade-' + esc(String(scan.grade || "").toLowerCase()) + '">' +
+      '<span class="label">Security grade</span>' +
+      "<strong>" + esc(scan.grade) + "</strong>" +
+      '<span class="mono">' + esc(scan.score) + "/100</span>" +
+      "</div>" +
+      toolsHtml +
+      '<div class="tool-box">' +
+      '<span class="label">CycloneDX SBOM &amp; image</span>' +
+      '<strong class="mono">' + sbom.package_count + " pkgs · " + img.size_mb + " MB</strong>" +
+      '<span class="muted mono">base: ' + esc(img.base_image || "n/a") + " · user: " + esc(img.user) + "</span>" +
+      "</div></div>" +
+      findingsHtml;
+  }
+
+  function loadScan(ver, refresh) {
+    if (!ver) return;
+    var url = api + "/scan/" + encodeURIComponent(ver) + (refresh ? "?refresh=1" : "");
+    getJSON(url)
+      .then(function (res) {
+        if (res && res.scan) renderScan(res.scan);
+      })
+      .catch(function () {});
+  }
+
+  if (scanSelect) {
+    scanSelect.addEventListener("change", function () {
+      loadScan(scanSelect.value, false);
+    });
+  }
+  if (rescanBtn && scanSelect) {
+    rescanBtn.addEventListener("click", function () {
+      loadScan(scanSelect.value, true);
+    });
+  }
 })();

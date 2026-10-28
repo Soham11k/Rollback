@@ -34,6 +34,13 @@ jobs:
           python seed.py
           PYTHONPATH=. pytest -q
 
+      - name: DevSecOps SAST and dependency audit (app)
+        working-directory: app
+        run: |
+          pip install bandit==1.7.10 pip-audit==2.7.3
+          bandit -r app.py catalog.py -lll
+          pip-audit -r requirements.txt --desc on || true
+
   test-rewind:
     name: RewindAI tests
     runs-on: ubuntu-latest
@@ -54,7 +61,9 @@ jobs:
 
       - name: Test
         working-directory: rewind
-        run: PYTHONPATH=. pytest -q
+        run: |
+          PYTHONPATH=. pytest -q
+          bandit -r . -x ./tests -lll
 
   # RewindAI watches the release branch, so only commits that passed both suites get deployed.
   promote:

@@ -17,6 +17,7 @@ import requests
 from deployer import publish_release
 from edits import apply_edits, copy_tree, edits_to_unified_diff, normalize_edits
 from registry import Registry
+from scanner import _ast_sast_findings
 from verify import Verifier
 
 
@@ -114,6 +115,16 @@ def build_prompt(report: dict, bad_src: Path, base_src: Path) -> str:
     changed = _changed_files(report)
     diff = _unified_diff(base_src, bad_src, changed) if base_src != bad_src else ""
     files_blob = _changed_file_contents(bad_src, changed)
+    base_fps = {f["fingerprint"] for f in _ast_sast_findings(base_src)} if base_src.is_dir() else set()
+    new_sast = [
+        f
+        for f in _ast_sast_findings(bad_src)
+        if f["fingerprint"] not in base_fps and f.get("severity") in {"critical", "high", "medium"}
+    ]
+    sast_lines = [
+        f"- [{f['rule_id']} / {f['cwe']}] {f['file']}:{f['line']} ({f['severity']}): {f['title']} — {f['remediation']}"
+        for f in new_sast
+    ]
 
     return f"""A release was quarantined after RewindAI verified it against live traffic.
 Find the regressions it introduced and return edits that remove them.
@@ -141,6 +152,9 @@ How to read the signals:
 - Memory that grows on every request (a module-level list or dict that is only appended to) is a leak even
   before memory crosses its limit: bound it or remove it.
 Return one entry in "bugs" for each cause you remove.
+
+DevSecOps SAST findings introduced in this release:
+{chr(10).join(sast_lines) or '(none)'}
 
 Tracebacks from the release logs:
 {chr(10).join(tb_lines) or '(none)'}

@@ -192,6 +192,28 @@ class Registry:
     def read_recording(self, app_id: str, version: str) -> dict | None:
         return self._read_json(self.release_dir(app_id, version) / "recording.json")
 
+    def write_scan(
+        self,
+        app_id: str,
+        version: str,
+        payload: dict,
+        *,
+        sbom: dict | None = None,
+    ) -> None:
+        rdir = self.release_dir(app_id, version)
+        self._write_json(rdir / "scan.json", payload)
+        self._write_json(self.app_dir(app_id) / "last_scan.json", payload)
+        if sbom is not None:
+            self._write_json(rdir / "sbom.json", sbom)
+
+    def read_scan(self, app_id: str, version: str | None = None) -> dict | None:
+        if version:
+            return self._read_json(self.release_dir(app_id, version) / "scan.json")
+        return self._read_json(self.app_dir(app_id) / "last_scan.json")
+
+    def read_sbom(self, app_id: str, version: str) -> dict | None:
+        return self._read_json(self.release_dir(app_id, version) / "sbom.json")
+
     def list_recordings(self, app_id: str) -> list[dict]:
         root = self.app_dir(app_id) / "releases"
         if not root.is_dir():

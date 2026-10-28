@@ -48,6 +48,8 @@ GatePass 2.0.0 is a believable feature commit: surge pricing, a seat-hold audit 
 - **Hero and status band.** The headline says what is true right now: verifying, failing, rolled back, healthy. Live health and Last incident are separate cells, so a rollback stays visible after 1.0.0 is healthy again.
 - **Verify banner.** While a release is in its window, a live bar shows seconds elapsed, majority votes and the latest sample. The page reloads with the verdict.
 - **Where the bugs are.** Each crossed signal names its location: CPU at the app process, latency at the slowest probe path, errors at the failing one. Suspects come from tracebacks and the diff against BEST. The panel shows "Fixed in 3.0.0" once a newer release verifies healthy.
+- **Before vs After — What Changed.** Pick any two releases (`1.0.0 → 2.0.0` or `2.0.0 → 3.0.0`) or click a preset (`What broke`, `AI fix delta`, `Baseline vs fixed`) to inspect headroom score delta, CPU / p95 / error deltas, per-route probe deltas, DevSecOps findings introduced vs fixed, AST symbols added/modified/removed, and a side-by-side or unified code diff.
+- **DevSecOps Release Scanner & SBOM.** Every release is scanned with **Bandit** (Python SAST), **pip-audit** (dependency CVEs), **Trivy** (container image + CycloneDX 1.5 SBOM), and **Dockerfile hardening** checks, producing a security grade (`A`–`F`).
 - **Compare versions.** Overlays every recorded verify window on seconds since deploy, with the limits as red dashes. 1.0.0 is ink, the failed release is red, later releases are dashed. Click a legend entry to hide a version.
 - **Replay the incident.** Play at 4x, Step through events, or drag the scrubber. The charts follow the playhead and each step lights up: deployed, first bad vote, majority, logs, report, rollback, restored.
 
@@ -62,6 +64,8 @@ GatePass 2.0.0 is a believable feature commit: surge pricing, a seat-hold audit 
 ./scripts/rewind.sh pick myapp 1.0.0
 ./scripts/rewind.sh fix myapp                 # waits for the proposal and prints it
 ./scripts/rewind.sh ship myapp --wait         # next major version by default
+./scripts/rewind.sh scan myapp [VERSION]      # Bandit SAST + pip-audit + Trivy/SBOM + Dockerfile grade
+./scripts/rewind.sh diff myapp [BEFORE] [AFTER] # Before vs After metrics, routes, AST, security, diff
 ./scripts/rewind.sh connect-github myapp --repo owner/name --path app
 ./scripts/rewind.sh disconnect-github myapp
 ```
