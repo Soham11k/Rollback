@@ -112,6 +112,22 @@ def test_isolation_forest_mode_records_plain_json(registry: Registry, monkeypatc
     assert [s["votes"] for s in recording["samples"]] == [1, 2, 3]
 
 
+def test_model_drift_far_below_limits_stays_healthy(registry: Registry):
+    import numpy as np
+
+    from model import save_model, score_sample, train_model
+
+    drift = [12.0, 24.0, 6.5, 0.0]
+    verifier = Verifier(registry, FakeWatcher(drift), window_seconds=2, interval_seconds=1, majority=3, warmup_seconds=0)
+    artifact = train_model(np.array([[0.4 + i % 3 / 10, 18.0 + i % 2, 4.0 + i % 4, 0.0] for i in range(12)]))
+    save_model(artifact, verifier.model_path("demo"))
+    assert score_sample(artifact, drift)[0]
+
+    result = verifier.verify("demo", "2.0.0")
+
+    assert (result["mode"], result["decision"]) == ("isolation_forest", "healthy")
+
+
 def test_healthy_window_updates_best(registry: Registry):
     watcher = FakeWatcher([5.0, 10.0, 40.0, 0.0])
     verifier = Verifier(registry, watcher, window_seconds=2, interval_seconds=1, majority=3, warmup_seconds=0)
@@ -129,6 +145,18 @@ def test_healthy_window_updates_best(registry: Registry):
     recording = registry.read_recording("demo", "2.0.0")
     assert recording["events"][-1]["kind"] == "healthy"
     assert recording["samples"] and not any(s["anomaly"] for s in recording["samples"])
+
+
+def test_restart_resumes_the_live_verify(registry: Registry, monkeypatch):
+    registry.update_release("demo", "2.0.0", status="verifying")
+    registry.update_release("demo", "1.0.0", status="verifying")
+    verifier = Verifier(registry, FakeWatcher([5.0, 10.0, 40.0, 0.0]), window_seconds=2, interval_seconds=1, majority=3, warmup_seconds=0)
+    started = []
+    monkeypatch.setattr(verifier, "verify_async", lambda app_id, version: started.append((app_id, version)))
+
+    assert verifier.resume_interrupted() == ["demo:2.0.0"]
+    assert started == [("demo", "2.0.0")]
+    assert registry.get_release("demo", "1.0.0")["status"] == "unverified"
 
 
 def test_busy_guard_while_verifying(registry: Registry, monkeypatch):

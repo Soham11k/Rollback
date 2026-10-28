@@ -105,6 +105,8 @@ Commits that leave the folder unchanged are skipped. A reused VERSION gets the s
 
 ## Ranking and rollback
 
+A sample votes bad when a signal crosses its limit. Once an app has an Isolation Forest (trained after its first healthy verify), the model can also vote bad, but only while some signal is at least half its limit, so ordinary drift in a healthy release never triggers a rollback. If RewindAI restarts mid-verify, it verifies the live release again on startup.
+
 Each healthy verify gets a **headroom score** (0–100) from how far peaks sit under the limits (CPU 80%, memory 80%, p95 1000 ms, errors 5%). **BEST** is the highest-scoring healthy non-quarantined release; within 5 points the newer version wins. Automatic rollback and **Revert to best** both use that choice.
 
 ## AI fixes
@@ -115,7 +117,7 @@ Planted bugs and AI patches use the same edit format:
 [{"file": "catalog.py", "search": "exact text", "replace": "fixed text"}]
 ```
 
-The prompt carries the crossed signals, tracebacks, suspects, the diff against BEST and the full changed files. When an edit does not apply, the model gets one retry with the error and the exact lines of the enclosing function. Search blocks that only lost their indentation still apply. Nothing ships until you review the diff; Ship publishes the bad release plus those edits as the next version and verifies it again.
+The prompt carries the crossed signals, tracebacks, suspects, the diff against BEST and the full changed files. The model gets up to two retries: when an edit does not apply (with the error and the exact lines of the enclosing function), and when the edits leave a traceback line unchanged (with that function, asking it to keep its edits and fix that line too). Search blocks that only lost their indentation still apply. Nothing ships until you review the diff; Ship publishes the bad release plus those edits as the next version and verifies it again.
 
 ## Tests
 

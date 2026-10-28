@@ -49,6 +49,8 @@ def _ensure_started() -> None:
             return
         WATCHER.start()
         GITHUB.start()
+        for key in VERIFIER.resume_interrupted():
+            print(f"[verify] resuming {key} after a restart", flush=True)
         _started = True
 
 

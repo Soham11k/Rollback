@@ -251,6 +251,20 @@ class GitHubPoller:
     def disconnect(self, app_id: str) -> None:
         self.registry.update_app(app_id, github=None)
 
+    def _settle(self, app_id: str, github: dict, sha: str) -> dict:
+        version = str(github.get("last_version") or "")
+        release = (self.registry.get_release(app_id, version) or {}) if version else {}
+        decision = release.get("decision")
+        if decision == "healthy":
+            message = f"{version} from commit {sha[:7]} verified healthy. The next commit that changes the folder deploys."
+        elif decision in {"anomaly", "rolled_back"}:
+            message = f"{version} from commit {sha[:7]} failed verification and was rolled back. Push a fix to deploy again."
+        elif release.get("status") == "error":
+            message = f"Verification of {version} stopped with an error: {release.get('verify_error') or 'unknown'}."
+        else:
+            return self._update(app_id)
+        return self._update(app_id, state="watching", message=message)
+
     def check(self, app_id: str) -> dict | None:
         with self._lock:
             return self._check(app_id)
@@ -268,6 +282,8 @@ class GitHubPoller:
         if sha is None:
             return self._update(app_id, state="waiting", message=f"Branch {branch} does not exist yet.")
         if sha == github.get("last_sha"):
+            if github.get("state") == "verifying" and not self.verifier.active_version(app_id):
+                return self._settle(app_id, github, sha)
             return self._update(app_id)
         if self.verifier.active_version(app_id):
             return self._update(app_id, state="waiting", message=f"New commit {sha[:7]}; waiting for the current verify to finish.")

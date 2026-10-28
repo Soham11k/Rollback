@@ -36,6 +36,15 @@ def threshold_is_anomaly(vector: list[float]) -> bool:
     )
 
 
+MODEL_FLOOR = 0.5
+
+
+def near_limit(vector: list[float]) -> bool:
+    """Some signal is at least MODEL_FLOOR of its limit. The model is trained on a short, quiet window,
+    so a flag below that is ordinary drift and must not roll back a healthy release."""
+    return any(value >= MODEL_FLOOR * LIMITS[name] for name, value in zip(FEATURE_NAMES, vector))
+
+
 def describe_vector(vector: list[float]) -> str:
     cpu, memory, latency_ms, error_pct = vector
     return (
@@ -217,6 +226,22 @@ class Verifier:
 
         threading.Thread(target=runner, daemon=True, name=f"verify-{key}").start()
 
+    def resume_interrupted(self) -> list[str]:
+        """Restart verifies a restart cut short: the live release verifies again, others become unverified."""
+        resumed = []
+        for app in self.registry.list_apps():
+            app_id = app["id"]
+            for release in self.registry.list_releases(app_id):
+                version = str(release.get("version") or "")
+                if release.get("status") != "verifying" or self.active_version(app_id) == version:
+                    continue
+                if version == app.get("live_version"):
+                    self.verify_async(app_id, version)
+                    resumed.append(f"{app_id}:{version}")
+                else:
+                    self.registry.update_release(app_id, version, status="unverified")
+        return resumed
+
     def verify(self, app_id: str, version: str) -> dict:
         app = self.registry.get_app(app_id)
         if not app:
@@ -282,7 +307,8 @@ class Verifier:
                 is_anomaly = threshold_is_anomaly(vector)
                 score = 1.0 if is_anomaly else 0.0
             else:
-                is_anomaly, score = score_sample(artifact, vector)
+                flagged, score = score_sample(artifact, vector)
+                is_anomaly = threshold_is_anomaly(vector) or (bool(flagged) and near_limit(vector))
             # Recordings and progress are JSON, so keep numpy scalars out.
             is_anomaly, score = bool(is_anomaly), float(score)
 

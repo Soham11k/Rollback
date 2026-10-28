@@ -167,6 +167,13 @@ def test_baseline_then_deploy_only_when_folder_changes(registry: Registry, world
     assert (done["state"], done["last_version"], done["last_sha"]) == ("verifying", "1.1.0", SHA_C)
     assert registry.get_release("demo", "1.1.0")["commit"]["url"].endswith(SHA_C)
 
+    verifier.busy = "1.1.0"
+    assert poller.check("demo")["state"] == "verifying"
+    verifier.busy = None
+    registry.update_release("demo", "1.1.0", decision="healthy", status="healthy")
+    settled = poller.check("demo")
+    assert settled["state"] == "watching" and "1.1.0" in settled["message"] and "healthy" in settled["message"]
+
 
 def test_missing_branch_waits_then_first_commit_deploys(registry: Registry, world):
     fake, verifier, published, poller = world
