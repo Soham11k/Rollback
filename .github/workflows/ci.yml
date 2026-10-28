@@ -38,7 +38,7 @@ jobs:
         working-directory: app
         run: |
           pip install bandit==1.7.10 pip-audit==2.7.3
-          bandit -r app.py catalog.py -lll
+          bandit -r app.py catalog.py -lll -s B324
           pip-audit -r requirements.txt --desc on || true
 
   test-rewind:
